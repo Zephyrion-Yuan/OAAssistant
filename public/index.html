@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MEGAnt 登录控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>OA/PDM 登录控制台</h1>
+        <p>本机 .venv 模式：点击登录按钮会打开本机 Edge，完成扫码或 SSO 后再检测登录状态。</p>
+      </div>
+      <div class="topActions">
+        <button id="refreshStatus" type="button">刷新状态</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel statusPanel">
+        <div class="panelTitle">
+          <h2>运行状态</h2>
+          <span id="serviceBadge" class="badge neutral">待检测</span>
+        </div>
+        <dl class="statusGrid">
+          <div>
+            <dt>托管浏览器</dt>
+            <dd id="browserState">-</dd>
+          </div>
+          <div>
+            <dt>Profile 模式</dt>
+            <dd id="profileMode">-</dd>
+          </div>
+          <div>
+            <dt>运行目录</dt>
+            <dd id="runtimeDir">-</dd>
+          </div>
+          <div>
+            <dt>PDM 缓存</dt>
+            <dd id="pdmCacheState">-</dd>
+          </div>
+        </dl>
+        <pre id="sessionStatus" class="output"></pre>
+        <img id="loginScreenshot" class="loginShot" alt="登录截图" hidden />
+      </section>
+
+      <section class="panel">
+        <div class="panelTitle">
+          <h2>OA 登录</h2>
+          <span id="oaBadge" class="badge neutral">未检测</span>
+        </div>
+        <div class="buttonRow">
+          <button id="startOaLogin" type="button">打开 OA 登录页</button>
+          <button id="testOaLive" type="button">检测 OA 是否有效</button>
+        </div>
+        <pre id="oaLoginOutput" class="output compact"></pre>
+      </section>
+
+      <section class="panel">
+        <div class="panelTitle">
+          <h2>PDM 登录</h2>
+          <span id="pdmBadge" class="badge neutral">未检测</span>
+        </div>
+        <div class="buttonRow">
+          <button id="startPdmLogin" type="button">打开 PDM 登录页</button>
+          <button id="testPdmLive" type="button">检测 PDM 是否有效</button>
+        </div>
+        <pre id="pdmLoginOutput" class="output compact"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

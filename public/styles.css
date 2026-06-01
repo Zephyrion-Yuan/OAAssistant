@@ -1,0 +1,191 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+  background: #f4f6f9;
+  color: #172033;
+}
+
+body {
+  margin: 0;
+}
+
+.topbar {
+  align-items: center;
+  background: #ffffff;
+  border-bottom: 1px solid #d8dee9;
+  display: flex;
+  justify-content: space-between;
+  padding: 18px 28px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 650;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+p {
+  color: #667085;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+button,
+.secondaryButton {
+  align-items: center;
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+button {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+.secondaryButton {
+  background: #ffffff;
+  color: #1d4ed8;
+}
+
+.topActions,
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 18px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.statusPanel {
+  grid-column: 1 / -1;
+}
+
+.panelTitle {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.badge {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.badge.neutral {
+  background: #eef2f7;
+  color: #475467;
+}
+
+.badge.ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge.bad {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.statusGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 0 12px;
+}
+
+.statusGrid div {
+  border: 1px solid #e3e8f0;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+dt {
+  color: #667085;
+  font-size: 12px;
+}
+
+dd {
+  font-size: 14px;
+  font-weight: 650;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.output {
+  background: #111827;
+  border-radius: 6px;
+  color: #e5e7eb;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.output.compact {
+  max-height: 260px;
+}
+
+.loginShot {
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  margin-top: 12px;
+  max-height: 360px;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .layout,
+  .statusGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+}

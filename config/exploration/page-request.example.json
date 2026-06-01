@@ -1,0 +1,25 @@
+{
+  "name": "PDM material query page",
+  "pageId": "pdm-material-form",
+  "url": "https://pdm.megarobo.info/material/material-form",
+  "allowManualLogin": true,
+  "loginTimeoutMs": 180000,
+  "interactions": [
+    {
+      "name": "Fill material keyword",
+      "type": "fill",
+      "selector": "input",
+      "value": "4000023659"
+    },
+    {
+      "name": "Press Enter to query",
+      "type": "press",
+      "key": "Enter"
+    },
+    {
+      "name": "Wait for query result APIs",
+      "type": "waitForNetworkIdle",
+      "timeoutMs": 30000
+    }
+  ]
+}

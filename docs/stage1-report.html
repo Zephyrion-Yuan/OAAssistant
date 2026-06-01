@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OA Assistant · Stage 1 报告与架构导览</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1f2430; --muted:#5b6472; --line:#e6e8ec;
+    --brain:#2f6df6; --brain-bg:#eaf1ff; --hand:#e8852b; --hand-bg:#fdf1e3;
+    --contract:#7a51e6; --contract-bg:#f0eafe; --ok:#1f9d57; --ok-bg:#e7f6ee;
+    --warn:#c47d12; --warn-bg:#fbf2e0; --py:#1f9d57; --node:#e8852b; --cfg:#6b7280;
+    --code:#0f1320; --codeink:#e6e8ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6;font-size:15px}
+  code,pre,.mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,"Liberation Mono",monospace}
+  .wrap{display:flex;max-width:1280px;margin:0 auto}
+  nav{position:sticky;top:0;align-self:flex-start;width:230px;height:100vh;overflow:auto;
+    padding:22px 14px;border-right:1px solid var(--line);background:#fff;flex:0 0 230px}
+  nav h1{font-size:14px;margin:0 0 4px;letter-spacing:.3px}
+  nav .sub{font-size:12px;color:var(--muted);margin-bottom:16px}
+  nav a{display:block;color:var(--muted);text-decoration:none;font-size:13px;padding:5px 10px;border-radius:7px;margin:1px 0}
+  nav a:hover{background:var(--bg);color:var(--ink)}
+  nav .grp{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:#9aa1ad;margin:14px 6px 4px}
+  main{flex:1;min-width:0;padding:34px 40px 80px}
+  section{margin-bottom:40px;scroll-margin-top:18px}
+  h2{font-size:23px;margin:0 0 6px;display:flex;align-items:center;gap:10px}
+  h2 .n{font-size:13px;color:#fff;background:var(--ink);width:26px;height:26px;border-radius:50%;
+    display:inline-flex;align-items:center;justify-content:center;flex:0 0 26px}
+  h3{font-size:16px;margin:22px 0 8px}
+  p{margin:8px 0}
+  .lead{font-size:16px;color:var(--muted)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0;
+    box-shadow:0 1px 2px rgba(20,25,40,.03)}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}nav{display:none}}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;vertical-align:middle}
+  .t-py{background:var(--ok-bg);color:var(--py)} .t-node{background:var(--hand-bg);color:var(--node)}
+  .t-cfg{background:#eef0f3;color:var(--cfg)} .t-new{background:#e7f6ee;color:var(--ok)}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 11px;border-radius:20px;margin:3px 4px 3px 0}
+  .ok{background:var(--ok-bg);color:var(--ok)} .warnp{background:var(--warn-bg);color:var(--warn)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:8px 0}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#fafbfc;font-weight:600}
+  tr:nth-child(even) td{background:#fcfcfd}
+  pre{background:var(--code);color:var(--codeink);padding:14px 16px;border-radius:11px;overflow:auto;font-size:12.5px;line-height:1.5}
+  pre .c{color:#7f8aa3}.pre .k{color:#79b8ff}
+  .inline{background:#eef0f3;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:12.5px}
+  .layer{border-radius:14px;padding:16px 18px;margin:10px 0;border:1px solid}
+  .l-brain{background:var(--brain-bg);border-color:#cfe0ff}
+  .l-contract{background:var(--contract-bg);border-color:#ddd0fb}
+  .l-hand{background:var(--hand-bg);border-color:#f6dcc0}
+  .layer h4{margin:0 0 4px;font-size:15px}
+  .layer .who{font-size:12px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+  .who.brain{color:var(--brain)}.who.contract{color:var(--contract)}.who.hand{color:var(--hand)}
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:10px 0}
+  .node{background:#fff;border:1.5px solid var(--brain);color:var(--brain);border-radius:10px;
+    padding:8px 11px;font-size:12.5px;font-weight:600;min-width:96px;text-align:center;position:relative}
+  .node small{display:block;color:var(--muted);font-weight:400;font-size:11px;margin-top:2px}
+  .node.exec{border-color:var(--hand);color:var(--hand)}
+  .node.pure{border-color:#6b7280;color:#475063}
+  .node.term{border-color:var(--ok);color:var(--ok);background:var(--ok-bg)}
+  .arrow{align-self:center;color:#aab0bb;font-weight:700;font-size:16px}
+  .branch{font-size:12px;color:var(--muted);margin:4px 0 0;padding-left:6px;border-left:3px solid var(--line)}
+  .branch b{color:var(--ink)}
+  details{background:#fff;border:1px solid var(--line);border-radius:11px;margin:8px 0;padding:2px 14px}
+  summary{cursor:pointer;font-weight:600;padding:10px 0}
+  .kbd{background:#0f1320;color:#cdd3df;padding:1px 6px;border-radius:5px;font-size:12px}
+  .filerow{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .filerow:last-child{border-bottom:none}
+  .filerow .path{font-size:12.5px;min-width:230px;flex:0 0 230px}
+  .filerow .desc{font-size:13px;color:#3a4150}
+  .note{background:#fffdf5;border:1px solid #f0e6c8;border-radius:10px;padding:12px 15px;font-size:13.5px}
+  .hero{background:linear-gradient(135deg,#0f1733,#243a78);color:#fff;border-radius:18px;padding:26px 30px;margin-bottom:26px}
+  .hero h2{color:#fff} .hero .lead{color:#c8d4f5}
+  .hero .pill{background:rgba(255,255,255,.14);color:#fff}
+  .legend{font-size:12px;color:var(--muted);margin:6px 0 0}
+  a.x{color:var(--brain);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <h1>OA Assistant</h1>
+  <div class="sub">Stage 1 报告 · 架构导览</div>
+  <div class="grp">概览</div>
+  <a href="#tldr">一句话心智模型</a>
+  <a href="#status">Stage 1 成果 & 验证</a>
+  <a href="#why">为什么两种语言</a>
+  <div class="grp">架构</div>
+  <a href="#layers">三层架构</a>
+  <a href="#graph">LangGraph 流程图</a>
+  <a href="#contract">Executor 契约（设备分离）</a>
+  <a href="#trace">一次请求的数据流</a>
+  <div class="grp">文件</div>
+  <a href="#files-py">Python 编排层（你的主战场）</a>
+  <a href="#files-node">Node 执行端（黑盒/API）</a>
+  <a href="#edit">想改 X 改哪里</a>
+  <div class="grp">上手</div>
+  <a href="#run">怎么跑起来</a>
+  <a href="#glossary">Node→Python 词典</a>
+  <a href="#security">安全边界</a>
+  <a href="#next">下一步</a>
+</nav>
+<main>
+
+  <div class="hero">
+    <h2 style="border:none">OA Assistant · Stage 1</h2>
+    <p class="lead">把一条<strong>自然语言 + Excel</strong> 变成 OA「库存转储(workflow 89)」<strong>草稿</strong>；先用 PDM 校验物料，再由确定性脚本填单。<br>
+    LLM 只负责「理解」，Playwright 负责「动手」，<strong>永不自动提交</strong>。</p>
+    <span class="pill">✅ Node 语法检查通过</span>
+    <span class="pill">✅ Python 编译通过</span>
+    <span class="pill">✅ 离线端到端 4/4 通过</span>
+    <span class="pill">✅ CLI + 断点续跑可用</span>
+  </div>
+
+  <section id="tldr">
+    <h2><span class="n">0</span>一句话心智模型</h2>
+    <div class="card">
+      <p style="font-size:17px;margin-top:0">
+        🧠 <b style="color:var(--brain)">Python(LangGraph) 是大脑</b> —— 理解你说什么、缺什么就追问、决定下一步。<br>
+        🤝 <b style="color:var(--contract)">Executor 契约是插座</b> —— 大脑只认这个插座，不关心背后是什么设备。<br>
+        ✋ <b style="color:var(--hand)">Node(Playwright) 是手</b> —— 真正点按钮、填表格、读接口，已经写好、久经测试。
+      </p>
+      <p class="legend">作为只懂 Python 的你：<b>90% 的工作在 Python 那一层</b>；Node 那层你基本当成一个「本地 HTTP API」用就行，本报告会逐文件标注。</p>
+    </div>
+  </section>
+
+  <section id="status">
+    <h2><span class="n">1</span>Stage 1 做了什么 & 验证结果</h2>
+    <p class="lead">Stage 1 = 跑通「最小闭环」：PDM 校验物料 → OA 89 填单 → 保存草稿，并且全程可观测、可断点续跑。</p>
+
+    <div class="grid g3">
+      <div class="card"><h3 style="margin-top:0">① Node 端（手）</h3>
+        把原本只能命令行跑的填单脚本，抽成一个可被 HTTP 调用的函数 + 新接口。<span class="tag t-node">Node</span></div>
+      <div class="card"><h3 style="margin-top:0">② Python 编排（脑）</h3>
+        新建 LangGraph 工作流：意图理解 → 追问 → PDM 校验 → 填单 → 自检 → 收尾。<span class="tag t-py">Python</span></div>
+      <div class="card"><h3 style="margin-top:0">③ Executor 契约</h3>
+        大脑与手之间的标准插座，已含真实(HTTP)和假(Mock)两种实现。<span class="tag t-py">Python</span></div>
+    </div>
+
+    <h3>验证结果（全部本地可复现，无需公司网络 / DeepSeek / 浏览器）</h3>
+    <table>
+      <tr><th>检查</th><th>命令</th><th>结果</th></tr>
+      <tr><td>Node 语法</td><td class="mono">npm run check</td><td><span class="pill ok">PASS</span></td></tr>
+      <tr><td>接口校验（zod）</td><td class="mono">POST /api/oa/stock-transfer 传非法 body</td><td><span class="pill ok">返回结构化 issues</span></td></tr>
+      <tr><td>Python 编译</td><td class="mono">compileall oa_orchestrator</td><td><span class="pill ok">PASS</span></td></tr>
+      <tr><td>离线端到端</td><td class="mono">tests/smoke.py</td><td><span class="pill ok">4/4 PASS</span></td></tr>
+      <tr><td>CLI + 续跑</td><td class="mono">python -m oa_orchestrator.run --resume</td><td><span class="pill ok">从 sqlite 断点恢复</span></td></tr>
+    </table>
+    <div class="note">smoke 覆盖：① openpyxl 解析 Excel ② 顺利路径→保存草稿(拿到 requestId) ③ 物料编码错误→PDM 校验拦截→<span class="inline">needs_input</span> ④ 缺库存地点→追问→<span class="inline">needs_input</span>。</div>
+
+    <h3>还没验证（需要你提供输入）</h3>
+    <span class="pill warnp">DeepSeek API Key（否则 understand 只走关键词兜底）</span>
+    <span class="pill warnp">真实 OA 填单（需登录的托管 Edge + 公司网络 + 真实 Excel）</span>
+    <span class="pill warnp">交互式追问的真实 stdin（已实现，仅用 mock 跑过）</span>
+  </section>
+
+  <section id="why">
+    <h2><span class="n">2</span>为什么是「Python + Node」两种语言？</h2>
+    <div class="card">
+      <p>现有项目里，4 套 OA 填单流程、PDM 查询、页面探索框架<strong>都已经用 Node + Playwright 写好并反复调通了</strong>（处理了大量弹窗、模态框、SAP 接口细节）。用 Python 重写一遍既浪费又有风险。</p>
+      <p>所以策略是：<b>不动那只「手」</b>，给它套一个 HTTP 接口；把<b>新的「大脑」</b>放在 Python —— 因为 LangGraph（状态机式 Agent 编排）是 Python 的主场。你只在 Python 里写逻辑，Node 当成一个本地服务调用即可。</p>
+    </div>
+  </section>
+
+  <section id="layers">
+    <h2><span class="n">3</span>三层架构</h2>
+    <div class="layer l-brain">
+      <div class="who brain">Brain · Python · LangGraph</div>
+      <h4>编排层 <span class="tag t-py">orchestrator/oa_orchestrator/</span></h4>
+      <p>自然语言意图抽取、缺槽追问、PDM 跨系统校验、执行、自检诊断、收尾审计。带 <span class="inline">SqliteSaver</span> 检查点 → 崩溃可续跑。<b>LLM 只在这一层，且只做「理解」</b>。</p>
+    </div>
+    <div style="text-align:center;color:#aab0bb;font-size:20px">▼ 只依赖一个契约（不关心设备） ▼</div>
+    <div class="layer l-contract">
+      <div class="who contract">Contract · Python · Protocol</div>
+      <h4>Executor 契约 <span class="tag t-py">executors/base.py</span></h4>
+      <p>三个方法：<span class="inline">session_status()</span> · <span class="inline">query_pdm()</span> · <span class="inline">fill_stock_transfer()</span>。
+      Windows / mac / 假靶子 的差异全部藏在「实现」里，<b>大脑一行都不用改</b>。</p>
+    </div>
+    <div style="text-align:center;color:#aab0bb;font-size:20px">▼ HTTP（本地 127.0.0.1） ▼</div>
+    <div class="layer l-hand">
+      <div class="who hand">Hand · Node · Playwright</div>
+      <h4>确定性执行端 <span class="tag t-node">src/</span></h4>
+      <p>真正驱动托管 Edge 浏览器填 OA 表单、查 PDM。已封印复用，只新增了一个 <span class="inline">/api/oa/stock-transfer</span> 接口。脱敏、白名单、危险按钮拦截、只存草稿都在这层强制。</p>
+    </div>
+  </section>
+
+  <section id="graph">
+    <h2><span class="n">4</span>LangGraph 流程图（11 个节点）</h2>
+    <p class="lead">把它想成一个状态机：每个「节点」是一个 Python 函数 <span class="inline">def node(state) -> dict</span>，返回对 state 的更新；「条件边」根据 state 决定下一个节点。</p>
+    <div class="flow">
+      <div class="node pure">intake<small>Excel→结构化</small></div><div class="arrow">→</div>
+      <div class="node exec">preflight<small>登录检查</small></div><div class="arrow">→</div>
+      <div class="node">understand<small>LLM 意图</small></div><div class="arrow">→</div>
+      <div class="node pure">check_slot<small>算缺啥</small></div><div class="arrow">→</div>
+      <div class="node exec">pdm_enrich<small>PDM 校验</small></div><div class="arrow">→</div>
+      <div class="node pure">resolve_params<small>组装参数</small></div><div class="arrow">→</div>
+      <div class="node exec">execute<small>填单</small></div><div class="arrow">→</div>
+      <div class="node pure">verify<small>核对草稿</small></div><div class="arrow">→</div>
+      <div class="node term">finalize<small>写审计→END</small></div>
+    </div>
+    <p class="legend">
+      <span class="node pure" style="min-width:auto;padding:2px 8px">纯函数</span> = 确定性，无 LLM &nbsp;
+      <span class="node" style="min-width:auto;padding:2px 8px">LLM</span> = 理解层 &nbsp;
+      <span class="node exec" style="min-width:auto;padding:2px 8px">Executor</span> = 经契约调用「手」 &nbsp;
+      <span class="node term" style="min-width:auto;padding:2px 8px">终点</span>
+    </p>
+    <h3>分支（条件边）</h3>
+    <div class="branch"><b>check_slot</b>：缺库存地点/WBS → <b>ask</b>（交互→回 understand 追问循环；无人值守→<b>needs_input</b> 可恢复终态）</div>
+    <div class="branch"><b>pdm_enrich</b>：物料编码不存在/未启用 → <b>diagnose</b> → <b>needs_input</b></div>
+    <div class="branch"><b>verify</b>：ok → finalize；失败 → <b>diagnose</b></div>
+    <div class="branch"><b>diagnose</b>（自愈大脑）：瞬时错误→<b>retry</b> 回 execute；登录失效→<b>needs_login</b>；结构漂移→转人工 escalate</div>
+    <div class="branch"><b>ask 追问</b>只发生在「输入阶段」；填单→保存草稿是<b>无人值守</b>。最终「提交审批」永远人工。</div>
+  </section>
+
+  <section id="contract">
+    <h2><span class="n">5</span>Executor 契约 = 设备分离的关键</h2>
+    <div class="grid g2">
+      <div class="card">
+        <p>这是你那条「想把设备相关脚本和 Agent 工作流分开」需求的落地。Agent 图<strong>只 import 这个 Protocol</strong>：</p>
+<pre><span class="c"># executors/base.py</span>
+class Executor(Protocol):
+    def session_status(self) -> dict: ...
+    def query_pdm(self, filters: dict) -> dict: ...
+    def fill_stock_transfer(self, req: FillRequest) -> ExecutionResult: ...</pre>
+      </div>
+      <div class="card">
+        <p>三种实现，按 <span class="inline">EXECUTOR</span> 环境变量切换：</p>
+        <table>
+          <tr><th>实现</th><th>用途</th></tr>
+          <tr><td class="mono">HttpNodeExecutor</td><td>调真实 Node 服务；Win/mac 差异藏这里</td></tr>
+          <tr><td class="mono">MockExecutor</td><td>内存假 OA/PDM，离线测试/CI</td></tr>
+          <tr><td class="mono">(未来) Mac/PyPlaywright</td><td>同契约，新实现即可，图不变</td></tr>
+        </table>
+        <p class="legend">想加 mac 专用执行端、或换成纯 Python Playwright？只需新写一个满足契约的类，<b>graph.py 不用动</b>。</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="trace">
+    <h2><span class="n">6</span>一次请求的数据流（具体走一遍）</h2>
+    <p class="lead">输入：<span class="inline">--request "从设备零件仓 D002 转到成品仓 A001" --excel req.xlsx --save</span></p>
+    <table>
+      <tr><th>节点</th><th>做了什么</th><th>state 里多了什么</th></tr>
+      <tr><td class="mono">intake</td><td>openpyxl 解析 Excel，存进 SQLite <span class="inline">business_inputs</span> 表</td><td><span class="mono">business_input</span>（物料/WBS/工厂）</td></tr>
+      <tr><td class="mono">preflight</td><td>问执行端 OA 是否已登录</td><td>登录 ok / 否则 needs_login</td></tr>
+      <tr><td class="mono">understand</td><td>LLM(或关键词兜底) 从中文抽出：转出仓=设备零件仓/D002，转入仓=成品仓/A001</td><td><span class="mono">intent</span></td></tr>
+      <tr><td class="mono">check_slot</td><td>纯函数算必填项是否齐</td><td><span class="mono">missing=[]</span></td></tr>
+      <tr><td class="mono">pdm_enrich</td><td>对每个物料编码查 PDM，确认「存在且启用」，补全单位/名称</td><td><span class="mono">pdm.valid=true</span></td></tr>
+      <tr><td class="mono">resolve_params</td><td>把 intent 映射成执行端要的 camelCase 参数</td><td><span class="mono">resolved</span></td></tr>
+      <tr><td class="mono">execute</td><td>经契约调 <span class="inline">fill_stock_transfer</span> → Node 驱动 Edge 填单 + 保存草稿</td><td><span class="mono">result.requestId</span></td></tr>
+      <tr><td class="mono">verify</td><td>核对是否真的拿到草稿号</td><td>verified=true</td></tr>
+      <tr><td class="mono">finalize</td><td>写 <span class="inline">.runtime/orchestrator/&lt;thread&gt;/run.json</span> 两级审计</td><td><span class="mono">status=done</span></td></tr>
+    </table>
+  </section>
+
+  <section id="files-py">
+    <h2><span class="n">7</span>Python 编排层 —— 你的主战场 <span class="tag t-py">Python</span></h2>
+    <p class="lead">目录 <span class="inline">orchestrator/oa_orchestrator/</span>。每个文件职责单一，先看 graph.py 串起全局，再看具体节点。</p>
+
+    <h3>核心骨架</h3>
+    <div class="card">
+      <div class="filerow"><span class="path mono">graph.py</span><span class="desc">把 11 个节点用条件边连成状态机；挂 SqliteSaver 检查点。<b>想看全局先看这里</b>。</span></div>
+      <div class="filerow"><span class="path mono">run.py</span><span class="desc">CLI 入口。解析参数 → 建执行端/检查点/图 → 流式跑 → 打印结果 + 写 run.json。</span></div>
+      <div class="filerow"><span class="path mono">state.py</span><span class="desc"><span class="inline">GraphState</span>（TypedDict）：在节点间传递的「公文包」+ 状态常量（done/needs_input…）。</span></div>
+      <div class="filerow"><span class="path mono">schemas.py</span><span class="desc">Pydantic 数据契约：BusinessInput / Intent / FillRequest / ExecutionResult / Diagnosis。</span></div>
+      <div class="filerow"><span class="path mono">config.py</span><span class="desc">读环境变量（每次调用都读，便于覆盖）：NODE_BASE_URL、DEEPSEEK_API_KEY、EXECUTOR…</span></div>
+      <div class="filerow"><span class="path mono">store.py</span><span class="desc">独立 SQLite <span class="inline">business_inputs</span> 表的读写（结构化 Excel 持久化）。</span></div>
+      <div class="filerow"><span class="path mono">llm.py</span><span class="desc">DeepSeek 模型工厂 + 结构化输出助手；<b>没 Key 时返回 None，让节点走规则兜底</b>。</span></div>
+    </div>
+
+    <h3>Executor 契约 <span class="inline">executors/</span></h3>
+    <div class="card">
+      <div class="filerow"><span class="path mono">executors/base.py</span><span class="desc">契约本体（Protocol）+ get_executor 工厂。</span></div>
+      <div class="filerow"><span class="path mono">executors/http_node.py</span><span class="desc">用 httpx 调 Node 服务的真实实现。</span></div>
+      <div class="filerow"><span class="path mono">executors/mock.py</span><span class="desc">内存假 OA/PDM（含 2 个物料、2 个库存地点），离线测试用。</span></div>
+    </div>
+
+    <h3>节点 <span class="inline">nodes/</span>（每个就是一个函数）</h3>
+    <div class="card">
+      <div class="filerow"><span class="path mono">intake.py</span><span class="desc"><span class="tag t-new">移植自 stock_transfer_excel.py</span> openpyxl 解析 Excel → BusinessInput → 存表。含纯函数 <span class="inline">parse_workbook()</span> 便于单测。</span></div>
+      <div class="filerow"><span class="path mono">understand.py</span><span class="desc">LLM 抽意图；无 Key 时用正则兜底（找「X仓」「D002」这种）。<b>自然语言入口在这</b>。</span></div>
+      <div class="filerow"><span class="path mono">check_slot.py</span><span class="desc">纯函数：算缺哪些必填槽（转出/转入库存地点、按移动类型需要的 WBS）。</span></div>
+      <div class="filerow"><span class="path mono">ask.py</span><span class="desc">缺槽时生成追问；交互模式用 LangGraph <span class="inline">interrupt()</span> 暂停等回答，无人值守则进 needs_input。</span></div>
+      <div class="filerow"><span class="path mono">preflight.py</span><span class="desc">经契约问登录态；未登录→needs_login（可续跑）。</span></div>
+      <div class="filerow"><span class="path mono">pdm_enrich.py</span><span class="desc"><b>跨系统步</b>：逐物料查 PDM 校验「存在且启用」，补全单位/名称；坏码→needs_input。</span></div>
+      <div class="filerow"><span class="path mono">resolve_params.py</span><span class="desc">intent → 执行端参数（camelCase）。当前确定性映射，留了 LLM 消歧扩展位。</span></div>
+      <div class="filerow"><span class="path mono">execute.py</span><span class="desc">组 FillRequest，经契约调 fill_stock_transfer；摄取 actions/requestId。</span></div>
+      <div class="filerow"><span class="path mono">verify.py</span><span class="desc">核对是否走到「保存草稿」（看 requestId）。</span></div>
+      <div class="filerow"><span class="path mono">diagnose.py</span><span class="desc"><b>自愈大脑</b>：失败分类→瞬时重试/缺输入/登录失效/结构漂移转人工；受 max_retries 约束。</span></div>
+      <div class="filerow"><span class="path mono">finalize.py</span><span class="desc">写两级审计 run.json（图节点级 + Playwright 步级），定最终状态。</span></div>
+      <div class="filerow"><span class="path mono">_common.py</span><span class="desc">共享小工具（默认移动类型、是否需要 WBS、history 追加）。</span></div>
+    </div>
+
+    <h3>其它</h3>
+    <div class="card">
+      <div class="filerow"><span class="path mono">tests/smoke.py</span><span class="desc">离线端到端测试（造样例 xlsx + MockExecutor 跑全图）。改完代码先跑它。</span></div>
+      <div class="filerow"><span class="path mono">requirements.txt / .env.example / README.md</span><span class="desc">依赖 / 环境变量模板 / 使用说明。<span class="tag t-cfg">config</span></span></div>
+    </div>
+  </section>
+
+  <section id="files-node">
+    <h2><span class="n">8</span>Node 执行端 —— 当成本地 API <span class="tag t-node">Node</span></h2>
+    <p class="lead">你基本不用碰这层。只需知道：它启动后在 <span class="inline">http://127.0.0.1:8787</span> 提供接口；Stage 1 只动了 3 处。</p>
+    <table>
+      <tr><th>文件</th><th>角色（用 Python 类比）</th><th>Stage 1 改动</th></tr>
+      <tr><td class="mono">src/server.js</td><td>HTTP 服务器（≈ Flask/uvicorn，但用 Node 原生 http 手写路由）</td><td><span class="tag t-new">新增</span> <span class="inline">POST /api/oa/stock-transfer</span> + zod 校验 + 串行锁</td></tr>
+      <tr><td class="mono">src/automation/flows/stockTransfer.js</td><td>填单核心函数 <span class="inline">runStockTransfer(input)</span>（≈ 一个业务 service 函数）</td><td><span class="tag t-new">新建</span> 从 CLI 抽出；改吃<b>结构化入参</b>，不再读 Excel</td></tr>
+      <tr><td class="mono">scripts/oa-stock-transfer-from-excel.js</td><td>命令行脚本（≈ argparse 脚本）</td><td>瘦身成薄壳，仍兼容老命令行</td></tr>
+      <tr><td class="mono">config/oa-workflow-89-stock-transfer.json</td><td>页面选择器/业务映射（≈ 配置字典）</td><td>不变；填单逻辑读它定位按钮</td></tr>
+    </table>
+    <div class="note">关键点：新接口接收的是<b>已经结构化的物料数据</b>（不是 Excel 文件路径）—— 这正是你要求的「Excel 解析从 Node 抽到 Python 输入端」。<span class="inline">zod</span> 在 Node 里的作用 ≈ Python 的 <span class="inline">pydantic</span>。</div>
+  </section>
+
+  <section id="edit">
+    <h2><span class="n">9</span>想改 X，改哪个文件？</h2>
+    <table>
+      <tr><th>我想…</th><th>改这里</th></tr>
+      <tr><td>调整中文意图怎么抽（加新字段/同义词）</td><td class="mono">nodes/understand.py</td></tr>
+      <tr><td>改「哪些字段算必填」</td><td class="mono">nodes/check_slot.py</td></tr>
+      <tr><td>改 PDM 校验规则（如允许未启用物料）</td><td class="mono">nodes/pdm_enrich.py</td></tr>
+      <tr><td>改失败重试/分类策略</td><td class="mono">nodes/diagnose.py + config MAX_RETRIES</td></tr>
+      <tr><td>增删/重连节点（改流程）</td><td class="mono">graph.py</td></tr>
+      <tr><td>改数据结构（加字段）</td><td class="mono">schemas.py（+ state.py 如需新 state 键）</td></tr>
+      <tr><td>加一个新执行端（mac/纯Python）</td><td class="mono">executors/ 下新写一个类，satisfies base.py</td></tr>
+      <tr><td>改 Excel 列名/解析</td><td class="mono">nodes/intake.py（MAIN_HEADER_ALIASES）</td></tr>
+      <tr><td>换 LLM 模型/Key</td><td class="mono">orchestrator/.env + llm.py</td></tr>
+      <tr><td>改真实填单的按钮选择器</td><td class="mono">config/oa-workflow-89-stock-transfer.json <span class="tag t-node">Node</span></td></tr>
+    </table>
+  </section>
+
+  <section id="run">
+    <h2><span class="n">10</span>怎么跑起来</h2>
+    <div class="note" style="margin-bottom:10px">⚠️ 仓库里的 <span class="inline">.venv</span> 是<b>旧的 Windows venv（不能在 mac 用）</b>。已为你新建 <span class="inline">orchestrator/.venv</span>（python3.12）。</div>
+
+    <h3>A. 离线自测（最快，什么都不用准备）</h3>
+<pre>orchestrator/.venv/bin/python orchestrator/tests/smoke.py
+<span class="c"># 期望最后一行：ALL OFFLINE SMOKE TESTS PASSED</span></pre>
+
+    <h3>B. 用 Mock 后端跑 CLI（无真实 OA）</h3>
+<pre>PYTHONPATH=orchestrator orchestrator/.venv/bin/python -m oa_orchestrator.run \
+  --executor mock --excel /tmp/oa_sample.xlsx \
+  --request "从设备零件仓 D002 转到成品仓 A001" --save</pre>
+
+    <h3>C. 接真实 Node + DeepSeek（go-live）</h3>
+<pre><span class="c"># 1) 配置 LLM</span>
+cp orchestrator/.env.example orchestrator/.env   <span class="c"># 填 DEEPSEEK_API_KEY</span>
+
+<span class="c"># 2) 启动 Node 执行端（登录态：在弹出的托管 Edge 里手动扫码登录一次）</span>
+MEGANT_EDGE_PROFILE_MODE=sso-handoff npm start
+
+<span class="c"># 3) 驱动它（默认 dry-run 只填不存；加 --save 才保存草稿）</span>
+PYTHONPATH=orchestrator orchestrator/.venv/bin/python -m oa_orchestrator.run \
+  --excel /path/req.xlsx --request "..." --dry-run
+
+<span class="c"># 中途崩了？同 thread 续跑：</span>
+... -m oa_orchestrator.run --resume --thread st-xxxxxxxx</pre>
+    <p class="legend">CLI 参数：<span class="mono">--request --excel --thread --resume --save --dry-run --interactive --executor</span></p>
+  </section>
+
+  <section id="glossary">
+    <h2><span class="n">11</span>Node→Python 速查词典（给只懂 Python 的你）</h2>
+    <table>
+      <tr><th>Node 世界</th><th>≈ Python 世界</th></tr>
+      <tr><td class="mono">npm / package.json</td><td>pip / requirements.txt</td></tr>
+      <tr><td class="mono">node src/server.js</td><td>python -m / uvicorn 起服务</td></tr>
+      <tr><td class="mono">src/server.js（node:http 手写路由）</td><td>Flask / FastAPI 的 @app.route</td></tr>
+      <tr><td class="mono">zod（运行时校验）</td><td>pydantic</td></tr>
+      <tr><td class="mono">import / export（ESM）</td><td>import / 模块级定义</td></tr>
+      <tr><td class="mono">async / await</td><td>async / await（一样）</td></tr>
+      <tr><td class="mono">Playwright (JS)</td><td>Playwright (Python)（同一套概念）</td></tr>
+      <tr><td class="mono">edgeSession（模块级单例）</td><td>模块里的一个全局对象</td></tr>
+      <tr><td class="mono">.runtime/（产物目录）</td><td>一个 scratch/输出文件夹</td></tr>
+      <tr><td class="mono">npm run check</td><td>python -m compileall（只查语法）</td></tr>
+    </table>
+  </section>
+
+  <section id="security">
+    <h2><span class="n">12</span>安全边界（写进了代码，不只是口头）</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3 style="margin-top:0">🔒 大脑碰不到敏感物</h3>
+        <p>Python 图只和本机 Node API 通信，<b>从不接触 cookie/token</b>；Node 端 <span class="inline">redaction.js</span> 已脱敏 URL/响应。</p>
+        <p>喂给 LLM 的只有<b>业务字段</b>（物料编码/名称/数量/库存地点/WBS/中文请求），<b>绝不喂</b> SSO 链接、token、截图。</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">✋ 永不自动提交</h3>
+        <p>执行端最多<b>保存草稿</b>；填单函数本就 never click「提交」。图里没有任何提交/审批路径。</p>
+        <p>首跑默认 <span class="inline">--dry-run</span>（只填不存），验完再 <span class="inline">--save</span>。最终「提交审批」永远人工在浏览器完成。</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="next">
+    <h2><span class="n">13</span>下一步（Stage 2 / 3）</h2>
+    <div class="grid g3">
+      <div class="card"><h3 style="margin-top:0">Stage 2 · 自检加深</h3>
+        让 <span class="inline">diagnose</span> 真正调 DeepSeek 归因；接 explorer 自动重扫诊断「选择器漂移」；加交互式追问的真实联调。</div>
+      <div class="card"><h3 style="margin-top:0">Stage 3 · 推广</h3>
+        把 458/412/414 同法抽成 flow + 接口，图加 <span class="inline">workflow_id</span> 分派；可选暴露 MCP / 钉钉入口。</div>
+      <div class="card"><h3 style="margin-top:0">Go-live 待办</h3>
+        填 DeepSeek Key；启动登录态 Node；备一份真实 Excel；先 <span class="inline">--dry-run</span> 跑通再 <span class="inline">--save</span>。</div>
+    </div>
+  </section>
+
+  <p style="color:#9aa1ad;font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:14px">
+    生成于 Stage 1 验收 · 对应计划：<span class="mono">~/.claude/plans/langgraph-cheerful-sonnet.md</span> · 详见 <span class="mono">orchestrator/README.md</span> 与 <span class="mono">CLAUDE.md</span>
+  </p>
+</main>
+</div>
+</body>
+</html>

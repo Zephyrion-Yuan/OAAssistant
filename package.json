@@ -1,0 +1,52 @@
+{
+  "name": "megant-oa-pdm-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic Edge automation service for MEGA OA/PDM field discovery, draft filling, and PDM material queries.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "start:current-profile": "node scripts/start-current-profile.js",
+    "dev": "node --watch src/server.js",
+    "scan:oa": "node scripts/scan-oa.js",
+    "oa:extract-summary": "node scripts/extract-oa-field-summary.js",
+    "oa:summarize-summary": "node scripts/summarize-oa-field-summary.js",
+    "pdm:query": "node scripts/query-pdm.js",
+    "pdm:explore": "node scripts/explore-pdm-page.js",
+    "explore:page": "node scripts/explore-page.js",
+    "oa:purchase-from-excel": "node scripts/oa-purchase-from-excel.js",
+    "oa:outbound-from-excel": "node scripts/oa-outbound-from-excel.js",
+    "oa:inbound-from-excel": "node scripts/oa-inbound-from-excel.js",
+    "oa:stock-transfer-from-excel": "node scripts/oa-stock-transfer-from-excel.js",
+    "oa:login:start": "node scripts/oa-start-login.js",
+    "oa:login:test": "node scripts/oa-test-live.js",
+    "pdm:profile:cache": "node scripts/pdm-cache-profile.js",
+    "pdm:profile:test": "node scripts/pdm-test-profile.js",
+    "profile:cache": "node scripts/pdm-cache-profile.js",
+    "profile:test-login": "node scripts/pdm-test-profile.js",
+    "venv:setup": "python scripts/local_venv.py setup",
+    "venv:start": "python scripts/local_venv.py start",
+    "sso:start": "python scripts/local_venv.py sso-start",
+    "sso:relay-url": "node scripts/relay-url.js",
+    "sso:install-relay": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-browser-relay.ps1 -OpenSettings",
+    "sso:uninstall-relay": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-browser-relay.ps1 -Uninstall -OpenSettings",
+    "edge:close-all": "node scripts/close-edge.js",
+    "check": "node --check public/app.js && node --check src/server.js && node --check src/browser/browserLaunch.js && node --check src/browser/edgeSession.js && node --check src/browser/cachedProfileSession.js && node --check src/automation/apiRecorder.js && node --check src/automation/domScanner.js && node --check src/automation/oaAutomation.js && node --check src/automation/pdmAutomation.js && node --check src/automation/flows/stockTransfer.js && node --check src/automation/flows/outbound.js && node --check src/automation/flows/inbound.js && node --check src/automation/flows/purchase.js && node --check src/automation/loginDiagnostics.js && node --check src/automation/sessionDiagnostics.js && node --check src/security/redaction.js && node --check src/profile/profileCache.js && node --check src/profile/testLogin.js && node --check src/explorer/domainGuard.js && node --check src/explorer/safeNetworkRecorder.js && node --check src/explorer/surfaceScanner.js && node --check src/explorer/actionRunner.js && node --check src/explorer/artifacts.js && node --check src/explorer/pageExplorer.js && node --check scripts/a-cache-profile.js && node --check scripts/b-test-login.js && node --check scripts/close-edge.js && node --check scripts/oa-start-login.js && node --check scripts/oa-test-live.js && node --check scripts/pdm-cache-profile.js && node --check scripts/pdm-test-profile.js && node --check scripts/query-pdm.js && node --check scripts/explore-pdm-page.js && node --check scripts/relay-url.js && node --check scripts/explore-page.js && node --check scripts/oa-purchase-from-excel.js && node --check scripts/oa-outbound-from-excel.js && node --check scripts/oa-inbound-from-excel.js && node --check scripts/oa-stock-transfer-from-excel.js && node --check scripts/extract-oa-field-summary.js && node --check scripts/summarize-oa-field-summary.js"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "dotenv": "^17.4.2",
+    "pino": "^10.3.1",
+    "playwright": "^1.52.0",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

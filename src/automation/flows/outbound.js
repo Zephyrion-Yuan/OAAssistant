@@ -1,0 +1,542 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { edgeSession } from '../../browser/edgeSession.js';
+import { resolveOaPage, runtimeDir, ensureDir, readJson } from '../../config.js';
+import { waitForSettledPage, detectLoginPage } from '../domScanner.js';
+import { attachSafeNetworkRecorder } from '../../explorer/safeNetworkRecorder.js';
+import { scanPageSurface } from '../../explorer/surfaceScanner.js';
+import { redactUrl } from '../../security/redaction.js';
+
+// Server-callable core of OA workflow 412 (material outbound / 物资出库).
+// Excel parsing has been lifted out: this module consumes already-structured
+// `input.structured` (the shape produced by scripts/outbound_excel.py or the
+// Python orchestrator intake node) instead of a file path. The browser
+// lifecycle is owned by the caller (server keeps edgeSession alive; the CLI
+// wrapper closes it in finally).
+
+const workflowConfig = readJson('config/oa-workflow-412-outbound.json');
+const outboundRuntimeDir = path.join(runtimeDir, 'outbound-requests');
+
+export class NeedInputError extends Error {
+  constructor(message, payload = {}) {
+    super(message);
+    this.name = 'NeedInputError';
+    this.payload = payload;
+  }
+}
+
+function loadUserInfo({ userJson, userDepartment, userInfo } = {}) {
+  if (userInfo && typeof userInfo === 'object') {
+    return {
+      ...userInfo,
+      department: userDepartment || userInfo.department || userInfo.departmentName || userInfo.userDepartment || ''
+    };
+  }
+  if (userJson) {
+    const info = JSON.parse(fs.readFileSync(path.resolve(userJson), 'utf8'));
+    return {
+      ...info,
+      department: userDepartment || info.department || info.departmentName || info.userDepartment || ''
+    };
+  }
+  return { department: userDepartment || '' };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function encodeQueryValue(value) {
+  return encodeURIComponent(String(value)).replace(/%2E/g, '.');
+}
+
+async function clickExactText(page, text, options = {}) {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(text)}\\s*$`);
+  const locator = page.getByText(pattern).last();
+  await locator.waitFor({ timeout: options.timeoutMs || 15000 });
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  await locator.click();
+}
+
+async function selectDropdownOption(page, comboboxSelector, optionText) {
+  await page.locator(comboboxSelector).first().waitFor({ timeout: 15000 });
+  await page.locator(comboboxSelector).first().click();
+  await page.waitForTimeout(300);
+  await clickExactText(page, optionText);
+  await waitForSettledPage(page);
+}
+
+async function openBrowserField(page, buttonSelector) {
+  const button = page.locator(buttonSelector).first();
+  await button.waitFor({ timeout: 15000 });
+  await button.scrollIntoViewIfNeeded();
+  await button.click();
+  await page.locator('.ant-modal:visible, [role="dialog"]:visible').last().waitFor({ timeout: 15000 });
+  await page.waitForTimeout(500);
+}
+
+function browserDataMatcher({ contains }) {
+  return (response) => (
+    response.status() === 200
+    && response.url().includes('/api/public/browser/data/')
+    && (!contains || response.url().includes(contains))
+  );
+}
+
+async function clickSearchInModal(page, responseMatcher = null) {
+  const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
+  const responsePromise = responseMatcher
+    ? page.waitForResponse(responseMatcher, { timeout: 15000 }).catch(() => null)
+    : null;
+
+  await modal.getByRole('button', { name: /^\s*搜\s*索\s*$/ }).first().click();
+
+  if (!responsePromise) {
+    await waitForSettledPage(page);
+    return null;
+  }
+
+  const response = await responsePromise;
+  if (!response) return null;
+  return response.json().catch(() => null);
+}
+
+async function clickModalRow(page, modal, expectedText, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = modal.locator('tr', { hasText: expectedText }).filter({
+      hasNotText: /^\s*(?:No Data|暂无数据)\s*$/
+    }).first();
+    if (await row.isVisible().catch(() => false)) {
+      await row.scrollIntoViewIfNeeded().catch(() => {});
+      await row.click();
+      return true;
+    }
+    await page.waitForTimeout(100);
+  }
+  return false;
+}
+
+async function clickFirstModalDataRow(page, modal) {
+  const rows = modal.locator('.ant-table-tbody tr, tbody tr').filter({
+    hasNotText: /^\s*(?:No Data|暂无数据)\s*$/
+  });
+  const firstRow = rows.first();
+  if (await firstRow.isVisible().catch(() => false)) {
+    await firstRow.click();
+    return true;
+  }
+  return false;
+}
+
+function resultCount(data) {
+  return Number(data?.total ?? data?.count ?? data?.data?.total ?? 0);
+}
+
+async function selectCompany(page, factoryCode) {
+  const expectedCompanyName = workflowConfig.factoryCompanyNames[factoryCode];
+  await openBrowserField(page, workflowConfig.selectors.companyButton);
+  const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
+  const row = modal.locator('tr', { hasText: factoryCode }).first();
+  await row.waitFor({ timeout: 15000 });
+  const rowText = await row.innerText().catch(() => '');
+  if (expectedCompanyName && !rowText.includes(expectedCompanyName)) {
+    throw new Error(`Factory code ${factoryCode} did not match expected company "${expectedCompanyName}". Row text: ${rowText}`);
+  }
+  await row.click();
+  await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await waitForSettledPage(page);
+  return { factoryCode, companyName: expectedCompanyName || rowText.replace(/\s+/g, ' ').trim() };
+}
+
+async function selectCostCenter(page, costCenter) {
+  await openBrowserField(page, workflowConfig.selectors.costCenterButton);
+  const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
+  await page.locator(workflowConfig.selectors.costCenterNameInput).last().fill(costCenter.searchName);
+  const data = await clickSearchInModal(page, browserDataMatcher({
+    contains: `con7457_value=${encodeQueryValue(costCenter.searchName)}`
+  }));
+  if (data && resultCount(data) < 1) {
+    throw new NeedInputError(`Cost center query returned no rows for ${costCenter.searchName}.`, {
+      kind: 'costCenter',
+      question: '成本中心查询没有返回候选，请确认成本中心名称或编码。',
+      costCenter
+    });
+  }
+  const row = modal.locator('tr', { hasText: costCenter.costCenterCode }).first();
+  await row.waitFor({ timeout: 15000 });
+  const rowText = await row.innerText().catch(() => '');
+  if (!rowText.includes(costCenter.searchName)) {
+    throw new Error(`Cost center ${costCenter.costCenterCode} did not match "${costCenter.searchName}". Row text: ${rowText}`);
+  }
+  await row.click();
+  await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await waitForSettledPage(page);
+  return { code: costCenter.costCenterCode, name: costCenter.searchName };
+}
+
+function resolvePurpose(wbsCode) {
+  const match = workflowConfig.purposeByWbsPrefix.find((item) => (
+    String(wbsCode || '').toUpperCase().startsWith(String(item.prefix || '').toUpperCase())
+  ));
+  if (!match) {
+    throw new NeedInputError(`No purpose mapping configured for WBS ${wbsCode}.`, {
+      kind: 'purpose',
+      question: '当前 WBS 没有匹配到用途映射，请补充用途或更新 config/oa-workflow-412-outbound.json。',
+      wbsCode,
+      purposeByWbsPrefix: workflowConfig.purposeByWbsPrefix
+    });
+  }
+  return match;
+}
+
+async function selectPurpose(page, wbsCode) {
+  const purpose = resolvePurpose(wbsCode);
+  await openBrowserField(page, workflowConfig.selectors.purposeButton);
+  const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
+  const clicked = await clickModalRow(page, modal, purpose.purpose);
+  if (!clicked) throw new Error(`Could not select purpose "${purpose.purpose}".`);
+  await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await waitForSettledPage(page);
+  return purpose;
+}
+
+async function selectReservation(page, { factoryCode, wbsCode }) {
+  await openBrowserField(page, workflowConfig.selectors.reservationButton);
+  const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
+  await page.locator(workflowConfig.selectors.reservationFactoryInput).last().fill(factoryCode);
+  await page.locator(workflowConfig.selectors.reservationWbsInput).last().fill(wbsCode);
+  const data = await clickSearchInModal(page, browserDataMatcher({
+    contains: `WERKS=${encodeQueryValue(factoryCode)}&ZYL3=${encodeQueryValue(wbsCode)}`
+  }));
+  if (data && resultCount(data) < 1) {
+    throw new NeedInputError(`Reservation query returned no rows for factory=${factoryCode}, WBS=${wbsCode}.`, {
+      kind: 'reservation',
+      question: '预留号查询没有返回候选，请确认需求工厂代码与 WBS 编码。',
+      factoryCode,
+      wbsCode
+    });
+  }
+
+  const firstRowData = Array.isArray(data?.datas) ? data.datas[0] : null;
+  const reservationNumber = firstRowData?.RSNUMs || firstRowData?.RSNUM || '';
+  const sapResponsePromise = page.waitForResponse((response) => (
+    response.status() === 200 && response.url().includes('/api/querySAPActionApi/IF031')
+  ), { timeout: 15000 }).catch(() => null);
+
+  let clicked = false;
+  if (reservationNumber) {
+    clicked = await clickModalRow(page, modal, String(reservationNumber), 1200);
+  }
+  if (!clicked) clicked = await clickFirstModalDataRow(page, modal);
+  if (!clicked) throw new Error(`Could not select reservation row for factory=${factoryCode}, WBS=${wbsCode}.`);
+
+  await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  const sapResponse = await sapResponsePromise;
+  const sapData = sapResponse ? await sapResponse.json().catch(() => null) : null;
+  await waitForSettledPage(page);
+  const sapRows = Array.isArray(sapData?.data?.LT_DATA) ? sapData.data.LT_DATA : [];
+  return {
+    reservationNumber: reservationNumber || String(sapRows[0]?.RSNUM || ''),
+    browserResultCount: resultCount(data),
+    sapRowCount: sapRows.length,
+    sapRows
+  };
+}
+
+async function checkAllMaterialRows(page) {
+  const boxes = page.locator(workflowConfig.selectors.materialCheckboxes);
+  await boxes.first().waitFor({ timeout: 15000 });
+  const count = await boxes.count();
+  for (let index = 0; index < count; index += 1) {
+    const box = boxes.nth(index);
+    if (!(await box.isChecked().catch(() => false))) {
+      await box.check();
+    }
+  }
+  await waitForSettledPage(page);
+  return count;
+}
+
+function quantityText(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(value);
+  return String(value).trim();
+}
+
+async function fillMaterialQuantities(page, sapRows) {
+  const inputs = page.locator(`#${workflowConfig.selectors.materialApplyQuantityPrefix.replace(/_$/, '')}_0`);
+  await inputs.first().waitFor({ timeout: 15000 }).catch(() => {});
+  const applyInputs = page.locator(`input[id^="${workflowConfig.selectors.materialApplyQuantityPrefix}"]:visible`);
+  const count = await applyInputs.count();
+  if (count < 1) throw new Error('No visible material apply quantity inputs were found.');
+  if (sapRows.length && sapRows.length < count) {
+    throw new Error(`SAP returned ${sapRows.length} material rows but the page has ${count} quantity inputs.`);
+  }
+
+  const filled = [];
+  for (let index = 0; index < count; index += 1) {
+    const sapRow = sapRows[index] || {};
+    const quantity = quantityText(sapRow.BDMNG);
+    if (!quantity) throw new Error(`Missing total demand quantity for material row ${index + 1}.`);
+    const input = page.locator(`#${workflowConfig.selectors.materialApplyQuantityPrefix}${index}`).first();
+    await input.waitFor({ timeout: 15000 });
+    await input.scrollIntoViewIfNeeded().catch(() => {});
+    await input.fill(quantity);
+    filled.push({
+      rowIndex: index,
+      materialCode: String(sapRow.MATNR || ''),
+      reservationItem: String(sapRow.RSPOS || ''),
+      quantity
+    });
+  }
+  await waitForSettledPage(page);
+  return filled;
+}
+
+async function clickSave(page) {
+  const saveResponsePromise = page.waitForResponse((response) => (
+    response.status() === 200
+    && response.request().method() === 'POST'
+    && response.url().includes('/api/workflow/reqform/requestOperation')
+  ), { timeout: 30000 }).catch(() => null);
+  const saveButton = page.locator(workflowConfig.selectors.saveButton).first();
+  await saveButton.waitFor({ timeout: 15000 });
+  await saveButton.scrollIntoViewIfNeeded();
+  await saveButton.click();
+  const response = await saveResponsePromise;
+  const body = response ? await response.json().catch(() => null) : null;
+  await waitForSettledPage(page);
+  await page.waitForTimeout(3000);
+  const requestId = body?.data?.resultInfo?.requestid
+    || body?.data?.submitParams?.requestid
+    || new URL(page.url()).searchParams.get('requestid')
+    || page.url().match(/[?&]requestid=(\d+)/)?.[1]
+    || null;
+  return {
+    responseType: body?.data?.type || null,
+    requestId: requestId ? String(requestId) : null,
+    response: body
+  };
+}
+
+function stableRequestUrl(requestId) {
+  if (!requestId) return null;
+  return `https://oa.megarobo.info/spa/workflow/static4form/index.html#/main/workflow/req?requestid=${encodeURIComponent(requestId)}`;
+}
+
+async function waitForLoginRecovery(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await waitForSettledPage(page).catch(() => {});
+    const login = await detectLoginPage(page);
+    if (!login.requiresLogin) return false;
+    await page.waitForTimeout(2000);
+  }
+  return true;
+}
+
+async function writeFailureArtifact(page, recorder, error) {
+  try {
+    ensureDir(outboundRuntimeDir);
+    const targetPage = page && !page.isClosed()
+      ? page
+      : edgeSession.context?.pages?.().find((item) => !item.isClosed() && item.url() !== 'about:blank');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const base = {
+      ok: false,
+      capturedAt: new Date().toISOString(),
+      error: error.message,
+      needsInput: error instanceof NeedInputError,
+      input: error instanceof NeedInputError ? error.payload : null,
+      apiCalls: recorder?.calls || []
+    };
+    if (!targetPage) {
+      const failurePath = path.join(outboundRuntimeDir, `${stamp}-failure.json`);
+      fs.writeFileSync(failurePath, JSON.stringify(base, null, 2), 'utf8');
+      return { failurePath };
+    }
+    const screenshotPath = path.join(outboundRuntimeDir, `${stamp}-failure.png`);
+    const surfacePath = path.join(outboundRuntimeDir, `${stamp}-failure-surface.json`);
+    await targetPage.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+    const surface = await scanPageSurface(targetPage).catch(() => null);
+    fs.writeFileSync(surfacePath, JSON.stringify({
+      ...base,
+      url: redactUrl(targetPage.url()),
+      surface
+    }, null, 2), 'utf8');
+    return { screenshotPath, surfacePath };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fill OA workflow 412 (material outbound / 物资出库) from already-structured input.
+ *
+ * input = {
+ *   structured: { projectDefinition, wbsCode, demandFactoryCode, mrpController,
+ *                 mrpDescription, costCenter: { costCenterCode, searchName, ... },
+ *                 materialRows: [...] },
+ *   url?, userInfo?/userJson?/userDepartment?,
+ *   warehouseType?, loginTimeoutMs?, save: boolean
+ * }
+ *
+ * Throws NeedInputError (missing slot, with payload) or Error (failure); the
+ * thrown error carries `.artifact` with screenshot/surface paths. Returns a
+ * structured report on success. Never clicks 提交 — at most saves a draft.
+ */
+export async function runOutbound(input = {}) {
+  let page = null;
+  let recorder = null;
+  try {
+    const userInfo = loadUserInfo(input);
+    if (!userInfo.department) {
+      throw new NeedInputError('User department is required.', {
+        kind: 'userDepartment',
+        question: '需要用户部门用于成本中心匹配，请提供 userDepartment 或 userInfo.department。'
+      });
+    }
+    const excel = input.structured;
+    if (!excel || !excel.costCenter) {
+      throw new Error('runOutbound requires input.structured with a costCenter object.');
+    }
+
+    const warehouseType = input.warehouseType || workflowConfig.warehouseType;
+    const loginTimeoutMs = input.loginTimeoutMs ?? 180000;
+    const save = Boolean(input.save);
+
+    const pageConfig = resolveOaPage({ pageId: workflowConfig.pageId, url: input.url });
+    page = await edgeSession.newPage();
+    recorder = attachSafeNetworkRecorder(page);
+    const actions = [];
+    const results = {};
+
+    await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
+    await waitForSettledPage(page);
+    let login = await detectLoginPage(page);
+    if (login.requiresLogin && loginTimeoutMs > 0) {
+      const stillRequiresLogin = await waitForLoginRecovery(page, loginTimeoutMs);
+      login = await detectLoginPage(page);
+      if (stillRequiresLogin || login.requiresLogin) {
+        throw new Error('OA page still requires login after waiting for manual login.');
+      }
+    } else if (login.requiresLogin) {
+      throw new Error('OA page requires login. Complete manual login in the managed Edge profile first.');
+    }
+
+    async function step(name, fn) {
+      recorder.setPhase(name);
+      const startedCount = recorder.count();
+      const startedAt = new Date().toISOString();
+      try {
+        const value = await fn();
+        actions.push({
+          name,
+          ok: true,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          newApiCallCount: recorder.count() - startedCount
+        });
+        return value;
+      } catch (error) {
+        actions.push({
+          name,
+          ok: false,
+          error: error.message,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          newApiCallCount: recorder.count() - startedCount
+        });
+        throw error;
+      }
+    }
+
+    results.company = await step(`Select 所属记账主体 ${excel.demandFactoryCode}`, async () => (
+      selectCompany(page, excel.demandFactoryCode)
+    ));
+    results.costCenter = await step(`Select 成本中心 ${excel.costCenter.searchName}`, async () => (
+      selectCostCenter(page, excel.costCenter)
+    ));
+    results.warehouseType = await step(`Set 仓库类型 ${warehouseType}`, async () => {
+      await selectDropdownOption(page, workflowConfig.selectors.warehouseTypeCombobox, warehouseType);
+      return warehouseType;
+    });
+    results.purpose = await step(`Select 用途 for WBS ${excel.wbsCode}`, async () => (
+      selectPurpose(page, excel.wbsCode)
+    ));
+    results.reservation = await step(`Select 预留号 ${excel.demandFactoryCode}/${excel.wbsCode}`, async () => (
+      selectReservation(page, {
+        factoryCode: excel.demandFactoryCode,
+        wbsCode: excel.wbsCode
+      })
+    ));
+    results.checkedMaterialCheckboxCount = await step('Check all material rows', async () => (
+      checkAllMaterialRows(page)
+    ));
+    results.materialQuantities = await step('Fill material apply quantities from total demand quantities', async () => (
+      fillMaterialQuantities(page, results.reservation.sapRows)
+    ));
+
+    if (save) {
+      results.save = await step('Click 保存', async () => clickSave(page));
+    }
+
+    recorder.setPhase('post-run-scan');
+    const finalSurface = await scanPageSurface(page);
+    const requestId = results.save?.requestId || null;
+    const requestUrl = stableRequestUrl(requestId);
+    const report = {
+      ok: true,
+      ranAt: new Date().toISOString(),
+      page: {
+        id: pageConfig.id,
+        url: redactUrl(pageConfig.url),
+        finalUrl: redactUrl(page.url()),
+        requestId,
+        requestUrl
+      },
+      userInfo,
+      excel,
+      parameters: {
+        warehouseType,
+        save
+      },
+      results,
+      actions,
+      finalSurface,
+      apiCalls: recorder.calls
+    };
+
+    ensureDir(outboundRuntimeDir);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const reportPath = path.join(outboundRuntimeDir, `${stamp}-oa-outbound-from-excel.json`);
+    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
+    return {
+      ok: true,
+      reportPath,
+      requestId,
+      requestUrl,
+      summary: {
+        projectDefinition: excel.projectDefinition,
+        wbsCode: excel.wbsCode,
+        demandFactoryCode: excel.demandFactoryCode,
+        companyName: results.company.companyName,
+        mrpController: excel.mrpController,
+        mrpDescription: excel.mrpDescription,
+        costCenterName: excel.costCenter.searchName,
+        costCenterCode: excel.costCenter.costCenterCode,
+        warehouseType: results.warehouseType,
+        purpose: results.purpose.purpose,
+        reservationNumber: results.reservation.reservationNumber,
+        materialRowCount: results.materialQuantities.length,
+        saved: save,
+        actionCount: actions.length
+      },
+      actions
+    };
+  } catch (error) {
+    error.artifact = await writeFailureArtifact(page, recorder, error).catch(() => null);
+    throw error;
+  }
+}

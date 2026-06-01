@@ -1,0 +1,31 @@
+{
+  "workflowId": "414",
+  "pageId": "oa-workflow-414",
+  "inboundType": "项目退料",
+  "warehouseType": null,
+  "voucherSearchBy": "projectCode",
+  "voucherProjectCodeSource": "projectDefinition",
+  "quantityRule": "purchaseExcelQuantity",
+  "save": true,
+  "factoryCompanyNames": {
+    "1000": "北京镁伽机器人科技有限公司",
+    "1010": "苏州镁伽科技有限公司",
+    "1020": "深圳镁伽科技有限公司",
+    "1030": "北京镁伽科技有限公司",
+    "1050": "上海镁伽智能科技有限公司",
+    "8040": "杭州镁伽半导体新材料有限公司"
+  },
+  "selectors": {
+    "companyButton": "#field7527span > div:nth-of-type(2) > button",
+    "warehouseTypeCombobox": "#weaSelect_1 div[role=\"combobox\"]",
+    "inboundTypeCombobox": "#weaSelect_2 div[role=\"combobox\"]",
+    "projectReturnVoucherButton": "#field9637span > div:nth-of-type(2) > button",
+    "projectReturnVoucherNumberInput": "input#con7555_value:visible",
+    "projectReturnProjectCodeInput": "input#con7547_value:visible",
+    "modalSearchButton": "button:visible:has-text(\"搜 索\")",
+    "materialTable": "#oTable0",
+    "materialApplyQuantityPrefix": "field7589_",
+    "materialStockLocationButtonPrefix": "field7592_",
+    "saveButton": "button:visible:has-text(\"保 存\")"
+  }
+}

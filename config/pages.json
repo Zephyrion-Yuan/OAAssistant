@@ -1,0 +1,40 @@
+{
+  "oa": [
+    {
+      "id": "oa-portal",
+      "name": "OA Portal",
+      "workflowId": "portal",
+      "url": "https://oa.megarobo.info/wui/index.html?#/main/portal/portal-1-1?menuIds=0,1&menuPathIds=0,1&_key=tcagna"
+    },
+    {
+      "id": "oa-workflow-458",
+      "name": "OA Workflow 458",
+      "workflowId": "458",
+      "url": "https://oa.megarobo.info/spa/workflow/static4form/index.html#/main/workflow/req?iscreate=1&workflowid=458&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0"
+    },
+    {
+      "id": "oa-workflow-412",
+      "name": "OA Workflow 412",
+      "workflowId": "412",
+      "url": "https://oa.megarobo.info/spa/workflow/static4form/index.html#/main/workflow/req?iscreate=1&workflowid=412&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0"
+    },
+    {
+      "id": "oa-workflow-414",
+      "name": "OA Workflow 414",
+      "workflowId": "414",
+      "url": "https://oa.megarobo.info/spa/workflow/static4form/index.html#/main/workflow/req?iscreate=1&workflowid=414&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0"
+    },
+    {
+      "id": "oa-workflow-89",
+      "name": "OA Workflow 89",
+      "workflowId": "89",
+      "url": "https://oa.megarobo.info/spa/workflow/static4form/index.html#/main/workflow/req?iscreate=1&workflowid=89&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0"
+    }
+  ],
+  "pdm": {
+    "id": "pdm-material-form",
+    "name": "PDM Master Data Material",
+    "url": "https://pdm.megarobo.info/masterdata/master-data-material",
+    "legacyUrl": "https://pdm.megarobo.info/material/material-form"
+  }
+}

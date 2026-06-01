@@ -1,0 +1,126 @@
+"""Assemble the workflow-89 StateGraph: nodes + conditional edges + checkpointer.
+
+Topology (unattended draft; interactive slot-filling loop):
+
+  START → intake → preflight → understand → check_slot
+                                               │ missing → ask → (interactive: understand / unattended: finalize)
+                                               │ complete
+                                               ▼
+                                          pdm_enrich → (bad codes: diagnose) → resolve_params → execute → verify
+                                                                                     ▲                        │
+                                                                  diagnose ──retry───┘        ok → finalize → END
+                                                                     └ terminal → finalize → END
+"""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from langgraph.graph import END, START, StateGraph
+
+from .state import (STATUS_FAILED, STATUS_NEEDS_INPUT, STATUS_NEEDS_LOGIN,
+                    GraphState)
+from .nodes.intake import intake_node
+from .nodes.understand import understand_node
+from .nodes.personalize import personalize_node
+from .nodes.check_slot import check_slot_node
+from .nodes.ask import ask_node
+from .nodes.preflight import make_preflight
+from .nodes.pdm_enrich import make_pdm_enrich
+from .nodes.resolve_params import resolve_params_node
+from .nodes.execute import make_execute
+from .nodes.verify import verify_node
+from .nodes.diagnose import diagnose_node
+from .nodes.finalize import finalize_node
+
+
+def _result_failed(state: Dict[str, Any]) -> bool:
+    result = state.get("result") or {}
+    return bool(result) and not result.get("ok")
+
+
+def _route_after_intake(state: Dict[str, Any]) -> str:
+    return "finalize" if state.get("status") == STATUS_FAILED else "preflight"
+
+
+def _route_after_preflight(state: Dict[str, Any]) -> str:
+    if state.get("status") == STATUS_NEEDS_LOGIN:
+        return "finalize"
+    if _result_failed(state):
+        return "diagnose"
+    return "understand"
+
+
+def _route_after_check_slot(state: Dict[str, Any]) -> str:
+    return "ask" if state.get("missing") else "pdm_enrich"
+
+
+def _route_after_ask(state: Dict[str, Any]) -> str:
+    return "finalize" if state.get("status") == STATUS_NEEDS_INPUT else "understand"
+
+
+def _route_after_pdm(state: Dict[str, Any]) -> str:
+    result = state.get("result") or {}
+    return "diagnose" if result.get("needsInput") else "resolve_params"
+
+
+def _route_after_verify(state: Dict[str, Any]) -> str:
+    result = state.get("result") or {}
+    return "finalize" if result.get("ok") else "diagnose"
+
+
+def _route_after_diagnose(state: Dict[str, Any]) -> str:
+    diagnosis = state.get("diagnosis") or {}
+    return "execute" if diagnosis.get("action") == "retry" else "finalize"
+
+
+def build_graph(executor, checkpointer=None):
+    g = StateGraph(GraphState)
+    g.add_node("intake", intake_node)
+    g.add_node("preflight", make_preflight(executor))
+    g.add_node("understand", understand_node)
+    g.add_node("personalize", personalize_node)
+    g.add_node("check_slot", check_slot_node)
+    g.add_node("ask", ask_node)
+    g.add_node("pdm_enrich", make_pdm_enrich(executor))
+    g.add_node("resolve_params", resolve_params_node)
+    g.add_node("execute", make_execute(executor))
+    g.add_node("verify", verify_node)
+    g.add_node("diagnose", diagnose_node)
+    g.add_node("finalize", finalize_node)
+
+    g.add_edge(START, "intake")
+    g.add_conditional_edges("intake", _route_after_intake,
+                            {"finalize": "finalize", "preflight": "preflight"})
+    g.add_conditional_edges("preflight", _route_after_preflight,
+                            {"finalize": "finalize", "diagnose": "diagnose", "understand": "understand"})
+    g.add_edge("understand", "personalize")
+    g.add_edge("personalize", "check_slot")
+    g.add_conditional_edges("check_slot", _route_after_check_slot,
+                            {"ask": "ask", "pdm_enrich": "pdm_enrich"})
+    g.add_conditional_edges("ask", _route_after_ask,
+                            {"finalize": "finalize", "understand": "understand"})
+    g.add_conditional_edges("pdm_enrich", _route_after_pdm,
+                            {"diagnose": "diagnose", "resolve_params": "resolve_params"})
+    g.add_edge("resolve_params", "execute")
+    g.add_edge("execute", "verify")
+    g.add_conditional_edges("verify", _route_after_verify,
+                            {"finalize": "finalize", "diagnose": "diagnose"})
+    g.add_conditional_edges("diagnose", _route_after_diagnose,
+                            {"execute": "execute", "finalize": "finalize"})
+    g.add_edge("finalize", END)
+
+    return g.compile(checkpointer=checkpointer)
+
+
+def make_checkpointer(path: Optional[Path]):
+    """SqliteSaver backed by a file (durable resume) or in-memory (tests)."""
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    if path is None:
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+    return SqliteSaver(conn)

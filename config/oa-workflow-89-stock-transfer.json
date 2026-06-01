@@ -1,0 +1,37 @@
+{
+  "workflowId": "89",
+  "pageId": "oa-workflow-89",
+  "movementType": "普通库存转储至普通库存",
+  "warehouseType": null,
+  "quantityRule": "purchaseExcelQuantity",
+  "save": false,
+  "factoryNames": {
+    "1000": "北京镁伽机器人科技工厂",
+    "1010": "苏州镁伽科技工厂",
+    "1020": "深圳镁伽科技工厂",
+    "1030": "北京镁伽科技工厂",
+    "1050": "上海镁伽智能科技工厂",
+    "8010": "杭州镁伽科技工厂",
+    "8020": "杭州镁伽智能制造工厂",
+    "8030": "杭州镁伽创新科技工厂",
+    "8040": "杭州镁伽半导体新材料工厂",
+    "9050": "镁伽科技新加坡公司工厂"
+  },
+  "selectors": {
+    "movementTypeCombobox": "#weaSelect_1 div[role=\"combobox\"]",
+    "warehouseTypeCombobox": "#weaSelect_4 div[role=\"combobox\"]",
+    "factoryButton": "#field8513span > div:nth-of-type(2) > button",
+    "materialTable": "#oTable0",
+    "materialButtonPrefix": "field8402_",
+    "materialDescriptionPrefix": "field8403_",
+    "quantityPrefix": "field8404_",
+    "unitPrefix": "field8405_",
+    "transferOutStockLocationButtonPrefix": "field8646_",
+    "transferOutWbsButtonPrefix": "field8409_",
+    "transferInStockLocationButtonPrefix": "field8647_",
+    "transferInWbsButtonPrefix": "field8412_",
+    "materialCodeInput": "#MATNR:visible",
+    "wbsCodeInput": "#POSID:visible",
+    "saveButton": "button:visible:has-text(\"保 存\")"
+  }
+}

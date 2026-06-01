@@ -1,0 +1,16 @@
+{
+  "oa-workflow-458": {
+    "description": "扫描 OA 页面后，把稳定字段名固化到这里。key 是业务字段，selectors 可由 scan 结果补充。",
+    "fields": {
+      "projectCode": {
+        "labels": ["项目号", "项目编号"],
+        "selectors": []
+      },
+      "wbsCode": {
+        "labels": ["WBS", "WBS编码"],
+        "selectors": []
+      }
+    },
+    "draftButtonTexts": ["保存草稿", "保存", "暂存"]
+  }
+}

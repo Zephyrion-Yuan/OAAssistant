@@ -1,0 +1,39 @@
+# --- secrets (NEVER commit) ---
+**/.env
+**/.env.local
+.env
+.env.local
+# keep the template:
+!**/.env.example
+
+# --- generated runtime output (login screenshots, exploration artifacts with
+#     internal IDs, profile caches, orchestrator sqlite/run.json) ---
+.runtime/
+*.sqlite
+*.sqlite3
+
+# --- dependencies / virtualenvs ---
+node_modules/
+.venv/
+**/.venv/
+venv/
+
+# --- python caches ---
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- logs / local config ---
+npm-debug.log*
+*.local.json
+
+# --- OS / editor junk ---
+.DS_Store
+**/.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# --- personal onboarding doc (local paths + personal usage stats) ---
+ONBOARDING.md

@@ -1,0 +1,41 @@
+{
+  "workflowId": "412",
+  "pageId": "oa-workflow-412",
+  "warehouseType": "鲲鹏仓库",
+  "factoryCompanyNames": {
+    "1000": "北京镁伽机器人科技有限公司",
+    "1010": "苏州镁伽科技有限公司",
+    "1020": "深圳镁伽科技有限公司",
+    "1030": "北京镁伽科技有限公司",
+    "1050": "上海镁伽智能科技有限公司",
+    "8040": "杭州镁伽半导体新材料有限公司"
+  },
+  "purposeByWbsPrefix": [
+    {
+      "prefix": "R",
+      "purpose": "研发项目-研发领料",
+      "code": "1009",
+      "note": "OA 页面实际选项文案；用户口径通常简称为研发项目领料。"
+    },
+    {
+      "prefix": "C",
+      "purpose": "交付项目-厂内调试",
+      "code": "1011"
+    }
+  ],
+  "selectors": {
+    "companyButton": "#field7245span > div:nth-of-type(2) > button",
+    "costCenterButton": "#field7482span > div:nth-of-type(2) > button",
+    "costCenterNameInput": "input#con7457_value:visible",
+    "warehouseTypeCombobox": "#weaSelect_2 div[role=\"combobox\"]",
+    "purposeButton": "#field12742span > div:nth-of-type(2) > button",
+    "reservationButton": "#field8260span > div:nth-of-type(2) > button",
+    "reservationFactoryInput": "input#WERKS:visible",
+    "reservationWbsInput": "input#ZYL3:visible",
+    "modalSearchButton": "button:visible:has-text(\"搜 索\")",
+    "materialTable": "#oTable1",
+    "materialCheckboxes": "#oTable1 input[type=\"checkbox\"]:visible",
+    "materialApplyQuantityPrefix": "field8315_",
+    "saveButton": "button:visible:has-text(\"保 存\")"
+  }
+}

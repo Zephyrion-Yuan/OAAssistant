@@ -1,0 +1,7 @@
+node_modules
+.runtime
+.git
+*.log
+npm-debug.log*
+Dockerfile
+docker-compose.override.yml
