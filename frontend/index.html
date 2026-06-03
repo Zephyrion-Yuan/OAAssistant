@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OA 采购助手</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <!-- deep-chat: MIT, framework-agnostic chat web component (CDN, no build) -->
+  <script type="module" src="https://cdn.jsdelivr.net/npm/deep-chat@2/dist/deepChat.bundle.js"></script>
+</head>
+<body>
+<div id="app">
+  <!-- slim top bar -->
+  <header class="topbar">
+    <div class="brand">⚙︎ OA 采购助手 <span class="muted">库存驱动 · 永不提交</span></div>
+    <div class="topright">
+      <span class="seg">
+        <button :class="{on: executor==='mock'}" @click="executor='mock'">离线 mock</button>
+        <button :class="{on: executor==='http-node'}" @click="executor='http-node'">真机</button>
+      </span>
+      <span class="badge" :class="health.ok ? 'ok' : 'bad'" @click="ping">{{ health.ok ? '在线' : '离线' }}</span>
+      <button class="cfg" @click="drawer=true">配置</button>
+    </div>
+  </header>
+
+  <!-- two-pane workspace -->
+  <main class="workspace">
+    <!-- LEFT: conversation -->
+    <section class="pane left">
+      <deep-chat ref="dc"></deep-chat>
+    </section>
+
+    <!-- RIGHT: request builder -->
+    <section class="pane right">
+      <div class="rhead"><h3>采购需求</h3><span class="muted">填好需求行,点「发起申请」→ 左侧助手实时分流出草稿</span></div>
+      <div class="rows">
+        <div class="rrow rhdr"><span>物料编码</span><span>名称</span><span>数量</span><span>单位</span><span>WBS / 别称</span><span>工厂</span><span></span></div>
+        <div class="rrow" v-for="(r,i) in demandRows" :key="i">
+          <input v-model="r.materialCode" placeholder="4000…" />
+          <input v-model="r.materialName" placeholder="名称" />
+          <input v-model="r.quantity" class="sm" />
+          <input v-model="r.unit" class="sm" />
+          <input v-model="r.wbsCode" placeholder="编码或别称" />
+          <input v-model="r.demandFactoryCode" class="sm" />
+          <button class="x" @click="demandRows.splice(i,1)" title="删除">×</button>
+        </div>
+      </div>
+      <div class="radd"><button class="ghost" @click="addRow">+ 加一行</button></div>
+
+      <div class="rfoot">
+        <input class="msg" v-model="chatMessage" placeholder="一句话说明(可选,如:采购这些物料 / 用完还剩要退库)" @keyup.enter="send" />
+        <label class="chk"><input type="checkbox" v-model="save" /> 保存草稿<span class="muted">(默认 dry-run)</span></label>
+        <button class="primary" @click="send" :disabled="busy">{{ busy ? '运行中…' : '发起申请 ▸' }}</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- config drawer (hidden by default) -->
+  <div class="scrim" v-show="drawer" @click="drawer=false"></div>
+  <aside class="drawer" :class="{open: drawer}">
+    <div class="dhead">
+      <strong>配置</strong>
+      <div class="dtabs">
+        <button v-for="t in ['初始化','用户设置','WBS 管理']" :key="t" :class="{on: cfgTab===t}" @click="cfgTab=t; if(t==='WBS 管理') loadWbs(); if(t==='用户设置') loadProfile()">{{ t }}</button>
+      </div>
+      <button class="dclose" @click="drawer=false">×</button>
+    </div>
+    <div class="dbody">
+      <!-- 初始化 -->
+      <div v-show="cfgTab==='初始化'">
+        <p class="muted small">启动托管 Edge 并登录 OA / PDM。<b>离线 mock 模式无需登录</b>。BFF:<input v-model="bff" @change="persist" class="i-url" /></p>
+        <div class="wrap-btn">
+          <button @click="call('/api/session/login/oa/start','POST')">打开 OA 登录</button>
+          <button class="ghost" @click="call('/api/session/login/oa/test-live','POST')">检测 OA</button>
+          <button @click="call('/api/session/login/pdm/start','POST')">打开 PDM 登录</button>
+          <button class="ghost" @click="call('/api/session/login/pdm/test-live','POST')">检测 PDM</button>
+          <button class="ghost" @click="ping">刷新会话状态</button>
+        </div>
+        <pre class="out" v-text="sessionOut || '(mock 模式可跳过;真机点上面登录)'"></pre>
+      </div>
+      <!-- 用户设置 -->
+      <div v-show="cfgTab==='用户设置'">
+        <p class="muted small">用户 <input v-model="userId" class="i-sm" /> 的个性化默认值。</p>
+        <div class="fgrid">
+          <label>部门<input v-model="profile.department" /></label>
+          <label>默认工厂代码<input v-model="profile.default_factory_code" /></label>
+          <label>默认移动类型<input v-model="profile.default_movement_type" /></label>
+          <label>默认 WBS<input v-model="profile.default_wbs" /></label>
+          <label>默认转出库存地点名称<input v-model="profile.default_transfer_out_stock_location_name" /></label>
+          <label>默认转出库存地点SAP<input v-model="profile.default_transfer_out_stock_location_sap" /></label>
+          <label>默认转入库存地点名称<input v-model="profile.default_transfer_in_stock_location_name" /></label>
+          <label>默认转入库存地点SAP<input v-model="profile.default_transfer_in_stock_location_sap" /></label>
+        </div>
+        <div class="wrap-btn"><button @click="saveProfile">保存画像</button><button class="ghost" @click="loadProfile">加载</button></div>
+        <pre class="out small" v-text="profileMsg"></pre>
+      </div>
+      <!-- WBS 管理 -->
+      <div v-show="cfgTab==='WBS 管理'">
+        <p class="muted small">每个 WBS 绑定工厂/成本中心/采购人/库存地点;<b>别称</b>支持模糊引用。</p>
+        <div class="fgrid">
+          <label>WBS编码*<input v-model="wbsForm.wbsCode" placeholder="C2-0225002.06.01" /></label>
+          <label>别称(逗号分隔)<input v-model="wbsForm.alias" placeholder="传感器项目, SA探针" /></label>
+          <label>项目定义<input v-model="wbsForm.projectDefinition" /></label>
+          <label>需求工厂代码<input v-model="wbsForm.demandFactoryCode" /></label>
+          <label>成本中心<input v-model="wbsForm.costCenter" /></label>
+          <label>采购人(工号-姓名)<input v-model="wbsForm.purchaser" placeholder="ZN092-张三" /></label>
+          <label>MRP控制者<input v-model="wbsForm.mrpController" /></label>
+          <label>库存地点名称<input v-model="wbsForm.stockLocationName" /></label>
+          <label>库存地点SAP<input v-model="wbsForm.stockLocationSapCode" /></label>
+          <label>需求日期偏移(天)<input v-model="wbsForm.demandDateOffsetDays" type="number" min="0" /></label>
+          <label class="full">送货地址<input v-model="wbsForm.deliveryAddress" /></label>
+          <label class="full">备注<input v-model="wbsForm.remark" /></label>
+        </div>
+        <div class="wrap-btn">
+          <button @click="saveWbs">保存 / 更新</button>
+          <button class="ghost" @click="resetWbsForm">清空</button>
+          <label class="chk"><input type="checkbox" v-model="wbsShowArchived" @change="loadWbs" /> 含归档</label>
+          <button class="ghost" @click="loadWbs">刷新</button>
+        </div>
+        <div class="wbstable">
+          <div class="wt hdr"><span>WBS</span><span>别称</span><span>工厂</span><span>成本中心</span><span>库存地点</span><span></span></div>
+          <div class="wt" v-for="w in wbsList" :key="w.wbsCode" :class="{arch: w.status==='archived'}">
+            <span :title="w.wbsCode">{{ w.wbsCode }}</span><span>{{ w.alias || '-' }}</span><span>{{ w.demandFactoryCode || '-' }}</span>
+            <span>{{ w.costCenter || '-' }}</span><span>{{ [w.stockLocationName,w.stockLocationSapCode].filter(Boolean).join('/') || '-' }}</span>
+            <span class="wacts">
+              <button class="link" @click="editWbs(w)">编辑</button>
+              <button class="link danger" @click="delWbs(w.wbsCode)">{{ wbsDeleteArm===w.wbsCode ? '确认?' : '删' }}</button>
+            </span>
+          </div>
+          <div class="wt empty muted" v-if="!wbsList.length">(无记录)</div>
+        </div>
+        <pre class="out small" v-text="wbsMsg"></pre>
+      </div>
+    </div>
+  </aside>
+</div>
+<script src="./app.js"></script>
+</body>
+</html>

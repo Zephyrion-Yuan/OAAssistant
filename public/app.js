@@ -90,7 +90,125 @@ document.querySelector('#testPdmLive').addEventListener('click', async () => {
   await refreshStatus();
 });
 
+// ----- WBS registry -----------------------------------------------------------
+const wbsBadge = document.querySelector('#wbsBadge');
+const wbsForm = document.querySelector('#wbsForm');
+const wbsTableBody = document.querySelector('#wbsTableBody');
+const wbsOutput = document.querySelector('#wbsOutput');
+const wbsShowArchived = document.querySelector('#wbsShowArchived');
+
+const WBS_COLUMNS = [
+  'wbsCode', 'projectDefinition', 'demandFactoryCode', 'costCenter',
+  'purchaser', 'mrpController'
+];
+
+function wbsFormData() {
+  const data = {};
+  for (const el of wbsForm.elements) {
+    if (!el.name) continue;
+    const value = el.value.trim();
+    if (value !== '') data[el.name] = value;
+  }
+  return data;
+}
+
+function fillWbsForm(record) {
+  for (const el of wbsForm.elements) {
+    if (!el.name) continue;
+    el.value = record[el.name] ?? (el.name === 'status' ? 'active' : '');
+  }
+  wbsForm.querySelector('[name="wbsCode"]').focus();
+}
+
+function makeActionButton(label, danger, onClick) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = danger ? 'linkBtn danger' : 'linkBtn';
+  button.textContent = label;
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+function renderWbsRow(record) {
+  const row = document.createElement('tr');
+  if (record.status === 'archived') row.className = 'archived';
+  for (const key of WBS_COLUMNS) {
+    const cell = document.createElement('td');
+    cell.textContent = record[key] || '-';
+    row.appendChild(cell);
+  }
+  const location = document.createElement('td');
+  location.textContent = [record.stockLocationName, record.stockLocationSapCode].filter(Boolean).join(' / ') || '-';
+  row.appendChild(location);
+  const offset = document.createElement('td');
+  offset.textContent = record.demandDateOffsetDays ?? '-';
+  row.appendChild(offset);
+  const status = document.createElement('td');
+  status.textContent = record.status || 'active';
+  row.appendChild(status);
+
+  const actions = document.createElement('td');
+  const wrap = document.createElement('div');
+  wrap.className = 'rowActions';
+  wrap.appendChild(makeActionButton('编辑', false, () => fillWbsForm(record)));
+  if (record.status !== 'archived') {
+    wrap.appendChild(makeActionButton('归档', false, () => wbsMutate('/api/wbs/archive', { wbsCode: record.wbsCode })));
+  }
+  // inline two-click delete (no blocking native dialog)
+  const del = makeActionButton('删除', true, function handler() {
+    if (this.dataset.armed !== '1') {
+      this.dataset.armed = '1';
+      this.textContent = '确认删除?';
+      setTimeout(() => { this.dataset.armed = '0'; this.textContent = '删除'; }, 3000);
+      return;
+    }
+    wbsMutate('/api/wbs/delete', { wbsCode: record.wbsCode });
+  });
+  wrap.appendChild(del);
+  actions.appendChild(wrap);
+  row.appendChild(actions);
+  return row;
+}
+
+async function loadWbs() {
+  const includeArchived = wbsShowArchived.checked ? '?includeArchived=1' : '';
+  try {
+    const result = await api(`/api/wbs/list${includeArchived}`);
+    wbsTableBody.replaceChildren(...(result.records || []).map(renderWbsRow));
+    setBadge(wbsBadge, 'ok', `${result.count} 条`);
+    wbsOutput.textContent = `加载 ${result.count} 条 WBS 记录。`;
+  } catch (error) {
+    setBadge(wbsBadge, 'bad', '加载失败');
+    wbsOutput.textContent = error.stack || error.message;
+  }
+}
+
+async function wbsMutate(path, payload) {
+  try {
+    const result = await api(path, payload);
+    wbsOutput.textContent = pretty(result);
+    await loadWbs();
+  } catch (error) {
+    wbsOutput.textContent = error.stack || error.message;
+  }
+}
+
+wbsForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const record = wbsFormData();
+  if (!record.wbsCode) { wbsOutput.textContent = 'WBS编码为必填。'; return; }
+  await wbsMutate('/api/wbs/upsert', record);
+});
+
+document.querySelector('#wbsReset').addEventListener('click', () => {
+  wbsForm.reset();
+});
+document.querySelector('#wbsRefresh').addEventListener('click', loadWbs);
+wbsShowArchived.addEventListener('change', loadWbs);
+
 refreshStatus().catch((error) => {
   setBadge(serviceBadge, 'bad', '服务异常');
   statusBox.textContent = error.stack || error.message;
 });
+
+loadWbs();

@@ -33,6 +33,14 @@ from .nodes.execute import make_execute
 from .nodes.verify import verify_node
 from .nodes.diagnose import diagnose_node
 from .nodes.finalize import finalize_node
+# Phase 1/2 router nodes
+from .nodes.classify_goal import classify_goal_node
+from .nodes.resolve_wbs import make_resolve_wbs
+from .nodes.unit_check import unit_check_node
+from .nodes.inventory_query import make_inventory_query
+from .nodes.route_workflow import route_workflow_node
+from .nodes.prepare import make_prepare
+from .nodes.execute_plan import make_execute_plan
 
 
 def _result_failed(state: Dict[str, Any]) -> bool:
@@ -75,7 +83,67 @@ def _route_after_diagnose(state: Dict[str, Any]) -> str:
     return "execute" if diagnosis.get("action") == "retry" else "finalize"
 
 
-def build_graph(executor, checkpointer=None):
+def _acquire_gate(next_node: str):
+    """Stop at finalize whenever an upstream node set a blocking result
+    (bad PDM codes, unit review, login, or no draft); otherwise go on."""
+    def gate(state: Dict[str, Any]) -> str:
+        return "finalize" if _result_failed(state) else next_node
+    return gate
+
+
+def _route_after_unitcheck(state: Dict[str, Any]) -> str:
+    """Blocking result → finalize; return goal skips inventory (no stock decision)."""
+    if _result_failed(state):
+        return "finalize"
+    return "route_workflow" if state.get("goal") == "return" else "inventory_query"
+
+
+def build_acquire_graph(executor, checkpointer=None):
+    """Phase-1/2 inventory-driven router. classify_goal splits the two goals:
+
+    acquire: intake → preflight → classify_goal → pdm_enrich → unit_check
+             → inventory_query → route_workflow(412/89/458) → prepare → execute_plan → finalize
+    return:  …→ unit_check → route_workflow(414, bucket by WBS) → prepare → execute_plan → finalize
+    Any upstream blocking result short-circuits to finalize (resumable).
+    """
+    g = StateGraph(GraphState)
+    g.add_node("intake", intake_node)
+    g.add_node("preflight", make_preflight(executor))
+    g.add_node("resolve_wbs", make_resolve_wbs(executor))
+    g.add_node("classify_goal", classify_goal_node)
+    g.add_node("pdm_enrich", make_pdm_enrich(executor))
+    g.add_node("unit_check", unit_check_node)
+    g.add_node("inventory_query", make_inventory_query(executor))
+    g.add_node("route_workflow", route_workflow_node)
+    g.add_node("prepare", make_prepare(executor))
+    g.add_node("execute_plan", make_execute_plan(executor))
+    g.add_node("finalize", finalize_node)
+
+    g.add_edge(START, "intake")
+    g.add_conditional_edges("intake", _route_after_intake,
+                            {"finalize": "finalize", "preflight": "preflight"})
+    g.add_conditional_edges("preflight", _route_after_preflight,
+                            {"finalize": "finalize", "diagnose": "finalize", "understand": "resolve_wbs"})
+    g.add_edge("resolve_wbs", "classify_goal")
+    g.add_edge("classify_goal", "pdm_enrich")
+    g.add_conditional_edges("pdm_enrich", _acquire_gate("unit_check"),
+                            {"finalize": "finalize", "unit_check": "unit_check"})
+    g.add_conditional_edges("unit_check", _route_after_unitcheck,
+                            {"finalize": "finalize", "inventory_query": "inventory_query",
+                             "route_workflow": "route_workflow"})
+    g.add_conditional_edges("inventory_query", _acquire_gate("route_workflow"),
+                            {"finalize": "finalize", "route_workflow": "route_workflow"})
+    g.add_conditional_edges("route_workflow", _acquire_gate("prepare"),
+                            {"finalize": "finalize", "prepare": "prepare"})
+    g.add_edge("prepare", "execute_plan")
+    g.add_edge("execute_plan", "finalize")
+    g.add_edge("finalize", END)
+    return g.compile(checkpointer=checkpointer)
+
+
+def build_graph(executor, checkpointer=None, mode: str = "single"):
+    if mode == "acquire":
+        return build_acquire_graph(executor, checkpointer=checkpointer)
     g = StateGraph(GraphState)
     g.add_node("intake", intake_node)
     g.add_node("preflight", make_preflight(executor))

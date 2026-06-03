@@ -31,12 +31,16 @@ def extract_interrupt(chunk: Dict[str, Any]) -> Optional[str]:
     return str(value)
 
 
-def build_runtime(executor=None, settings: Optional[Settings] = None):
-    """Build (settings, executor, compiled graph) once; reuse across calls/turns."""
+def build_runtime(executor=None, settings: Optional[Settings] = None, mode: str = "single"):
+    """Build (settings, executor, compiled graph) once; reuse across calls/turns.
+
+    `mode` selects the topology: "single" (one workflow) or "acquire" (the
+    Phase-1 inventory-driven WBS-fan-out router).
+    """
     settings = settings or get_settings()
     settings.ensure_runtime_dir()
     executor = executor or get_executor(settings)
-    graph = build_graph(executor, checkpointer=make_checkpointer(settings.checkpoint_path))
+    graph = build_graph(executor, checkpointer=make_checkpointer(settings.checkpoint_path), mode=mode)
     return settings, executor, graph
 
 
@@ -51,6 +55,7 @@ def run_workflow(
     profile: Optional[Dict[str, Any]] = None,
     resume: Optional[Any] = None,
     workflow_id: str = "89",
+    mode: str = "single",
     executor=None,
     graph=None,
     settings: Optional[Settings] = None,
@@ -63,7 +68,7 @@ def run_workflow(
     - resume after crash: pass only `thread_id` (no request/resume).
     """
     if graph is None or settings is None:
-        settings, executor, graph = build_runtime(executor=executor, settings=settings)
+        settings, executor, graph = build_runtime(executor=executor, settings=settings, mode=mode)
 
     thread_id = thread_id or f"st-{uuid.uuid4().hex[:8]}"
     config = {"configurable": {"thread_id": thread_id}}
@@ -74,7 +79,7 @@ def run_workflow(
         payload = new_state(
             request=request, excel_path=excel_path, thread_id=thread_id,
             interactive=interactive, save=save, workflow_id=workflow_id,
-            user_id=user_id, profile=profile,
+            user_id=user_id, profile=profile, mode=mode,
         )
     else:
         payload = None  # resume from the last checkpoint

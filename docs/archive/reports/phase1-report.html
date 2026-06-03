@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 1 报告 · 库存驱动 WBS-fan-out Router</title>
+<style>
+  :root{
+    --bg:#0f1320; --panel:#171c2e; --panel2:#1d2438; --ink:#e6e9f2; --mut:#9aa4bf;
+    --line:#2a3350; --acc:#6ea8fe; --ok:#34d399; --warn:#fbbf24; --new:#f472b6; --code:#0b0e18;
+    --f412:#6ea8fe; --f89:#f472b6; --f458:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,Arial,sans-serif;line-height:1.6}
+  a{color:var(--acc)}
+  header{padding:30px 36px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,#141a2e,#0f1320)}
+  header h1{margin:0;font-size:25px}
+  header p{margin:8px 0 0;color:var(--mut);max-width:940px}
+  .wrap{max-width:1160px;margin:0 auto;padding:26px 24px 80px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:20px 0 8px;color:#cdd5ee}
+  p{margin:8px 0}.mut{color:var(--mut)}
+  .grid{display:grid;gap:14px}.g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h4{margin:0 0 6px;font-size:14px}
+  .pill{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:3px 9px;white-space:nowrap}
+  .pill.ok{background:rgba(52,211,153,.16);color:var(--ok)}
+  .pill.new{background:rgba(244,114,182,.16);color:var(--new)}
+  .pill.have{background:rgba(110,168,254,.16);color:var(--acc)}
+  .pill.warn{background:rgba(251,191,36,.16);color:var(--warn)}
+  code{font-family:"JetBrains Mono",Consolas,"Courier New",monospace;font-size:12.5px}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:10px 0;font-size:12.5px;line-height:1.55}
+  pre code{color:#d7dcf0}
+  .k{color:#c792ea}.s{color:#c3e88d}.c{color:#637299;font-style:italic}.f{color:#82aaff}.n{color:#f78c6c}.t{color:#ffcb6b}
+  .note{border-left:3px solid var(--acc);background:var(--panel2);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+  .note.warn{border-color:var(--warn)}.note b{color:#fff}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd5ee}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+  .node{border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:12.5px;background:var(--panel2);white-space:nowrap}
+  .node.new{border-color:rgba(244,114,182,.6);background:rgba(244,114,182,.10)}
+  .node.have{border-color:rgba(110,168,254,.45)}
+  .node.fin{border-color:rgba(52,211,153,.5);background:rgba(52,211,153,.08)}
+  .arrow{color:var(--mut)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  ul{margin:8px 0;padding-left:22px}li{margin:4px 0}
+  .toc{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 0}
+  .toc a{font-size:13px;text-decoration:none;border:1px solid var(--line);padding:5px 10px;border-radius:7px}
+  .tag412{color:var(--f412);font-weight:700}.tag89{color:var(--f89);font-weight:700}.tag458{color:var(--f458);font-weight:700}
+  .fileitem{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:#cdd5ee}
+  .tag{font-size:11px;color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Phase 1 报告 · 库存驱动 WBS-fan-out Router(获取模式)</h1>
+  <p>这一版把「一句话 + 一张需求表 → 自动判断每个物料走采购/出库/转储,按 WBS 拆成多张 OA 草稿」的<b>获取模式 router</b> 端到端打通了,并且<b>全程离线可验证</b>(mock 后端,无网络/无 LLM/无 Edge)。报告含:框架定位、分配算法可视化、acquire 图拓扑、关键文件代码解读、一个跑通的实例、验证结果、已知边界与下一步。</p>
+  <div class="toc">
+    <a href="#what">① Phase 1 是什么</a>
+    <a href="#algo">② 分配+分桶算法</a>
+    <a href="#topo">③ acquire 图拓扑</a>
+    <a href="#walk">④ 关键文件解读</a>
+    <a href="#example">⑤ 跑通实例</a>
+    <a href="#verify">⑥ 验证</a>
+    <a href="#limits">⑦ 边界 & 下一步</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- 1 -->
+<h2 id="what">① Phase 1 是什么 <span class="pill ok">完成 · 7/7 测试通过</span></h2>
+<div class="grid g2">
+  <div class="card"><h4>输入 → 输出</h4>
+    <p class="mut" style="font-size:13px">输入:一张统一<b>「需求」表</b>(物料编码 + 数量 + <b>每行 WBS</b> + 工厂)。输出:按 <span class="tag412">412 出库</span> / <span class="tag89">89 转储</span> / <span class="tag458">458 采购</span> + <b>WBS</b> 分桶的多张 OA 草稿(永不提交),外加一份汇总审计 run.json。</p>
+  </div>
+  <div class="card"><h4>这版做了 / 没做</h4>
+    <p style="font-size:13px"><span class="pill ok">做了</span> 获取模式三流(412/89/458)fan-out、缺口拆采购、WBS 分桶、458 附件程序生成、registry 自动补全、串行多草稿、首跑 dry-run。</p>
+    <p style="font-size:13px"><span class="pill new">Phase 2</span> 414 归还模式(意图触发);<span class="pill warn">待确认</span> 458 附件列模板对真实样例;unit_check 的 LLM 细化需 key。</p>
+  </div>
+</div>
+
+<!-- 2 -->
+<h2 id="algo">② 分配 + 分桶算法(纯函数,确定性,无 LLM)</h2>
+<p class="mut" style="font-size:13px">对每个需求行(物料 + WBS + 数量 Q),按优先级 <b class="tag412">412</b> &gt; <b class="tag89">89</b> &gt; <b class="tag458">458</b> 分配;一个物料的库存池<b>跨行扣减</b>(两行同物料不会重复占用库存)。</p>
+<pre><code><span class="c"># 每物料库存池:public(公共仓,SOBKZ空) + project{WBS: 量}(专属仓,SOBKZ=Q)</span>
+own  = pool.project[demandWBS]                  <span class="c"># 本项目专属仓 → 可直接出库</span>
+a412 = min(Q, public + own)                     <span class="c"># 412 出库(扣 own 再扣 public)</span>
+rem  = Q - a412
+<span class="k">for</span> srcWBS, avail <span class="k">in</span> 其它项目专属仓(按量降序):       <span class="c"># 89 转储,每个源 WBS 一张草稿</span>
+    a89 = min(rem, avail); rem -= a89           <span class="c">#   转出=srcWBS, 转入=demandWBS</span>
+a458 = rem                                      <span class="c"># 458 采购缺口</span></code></pre>
+<p class="mut" style="font-size:13px"><b>分桶键</b>:<span class="tag412">412</span> = (412, WBS);<span class="tag89">89</span> = (89, WBS, 源WBS);<span class="tag458">458</span> = (458, WBS)。跨物料同键合并物料行 → 每个桶 = 一张草稿。</p>
+<table>
+  <tr><th>库存情形</th><th>路由</th><th>移动类型(89)</th></tr>
+  <tr><td>公共仓 / 本项目专属仓</td><td><span class="tag412">412 出库</span></td><td>—</td></tr>
+  <tr><td>别项目专属仓(SOBKZ=Q)</td><td><span class="tag89">89 转储</span></td><td>项目库存转储至项目库存(自动推导)</td></tr>
+  <tr><td>不足 / 无库存的缺口</td><td><span class="tag458">458 采购</span></td><td>—</td></tr>
+</table>
+
+<!-- 3 -->
+<h2 id="topo">③ acquire 图拓扑</h2>
+<div class="flow">
+  <span class="node have">intake<br><span class="tag">parse_demand</span></span><span class="arrow">→</span>
+  <span class="node have">preflight</span><span class="arrow">→</span>
+  <span class="node have">pdm_enrich<br><span class="tag">校验+补规格</span></span><span class="arrow">→</span>
+  <span class="node new">unit_check<br><span class="tag">单位换算审核</span></span><span class="arrow">→</span>
+  <span class="node have">inventory_query<br><span class="tag">查库存+分类</span></span><span class="arrow">→</span>
+  <span class="node new">route_workflow<br><span class="tag">分配+按WBS分桶</span></span>
+</div>
+<div class="flow">
+  <span class="arrow">↳</span>
+  <span class="node new">prepare<br><span class="tag">查WBS补全 + 生成458附件</span></span><span class="arrow">→</span>
+  <span class="node new">execute_plan<br><span class="tag">串行多草稿·dry-run</span></span><span class="arrow">→</span>
+  <span class="node fin">finalize<br><span class="tag">汇总N草稿+审计</span></span><span class="arrow">→ END</span>
+</div>
+<div class="legend">
+  <span><span class="dot" style="background:var(--acc)"></span>复用已有节点</span>
+  <span><span class="dot" style="background:var(--new)"></span>Phase 1 新建</span>
+  <span><span class="dot" style="background:var(--ok)"></span>终点</span>
+</div>
+<p class="mut" style="font-size:13px">任一上游节点设了「阻塞结果」(物料编码错、单位需审核、未登录、无草稿)就<b>短路到 finalize</b>(可恢复终态)。<b>单流程旧图完全不变</b> —— acquire 是 <code>build_graph(mode="acquire")</code> 的独立拓扑,旧测试 smoke/stage2/stage3/chat_demo 全绿。</p>
+
+<!-- 4 -->
+<h2 id="walk">④ 关键文件代码解读</h2>
+
+<h3>4.1 <code>nodes/route_workflow.py</code> — 分配 + WBS 分桶(核心)</h3>
+<pre><code><span class="c"># 跨需求行扣减同一物料的库存池;每个正分配进对应 (流,WBS) 桶</span>
+own = pool[<span class="s">"project"</span>].<span class="f">get</span>(wbs, Decimal(<span class="s">"0"</span>))
+a412 = <span class="f">min</span>(need, own + pool[<span class="s">"public"</span>])
+pool[<span class="s">"project"</span>][wbs] = own - <span class="f">min</span>(a412, own)        <span class="c"># 先扣 own</span>
+pool[<span class="s">"public"</span>] -= (a412 - <span class="f">min</span>(a412, own))          <span class="c"># 再扣 public</span>
+<span class="k">if</span> a412 &gt; <span class="n">0</span>: <span class="f">_add_line</span>(<span class="f">bucket</span>((<span class="s">"412"</span>, wbs), <span class="s">"412"</span>, wbs), material, name, a412, unit, meta)
+remaining = need - a412
+<span class="k">for</span> src_wbs, avail <span class="k">in</span> others:                        <span class="c"># 89:每个源 WBS 一张草稿</span>
+    a89 = <span class="f">min</span>(remaining, avail); remaining -= a89
+    <span class="k">if</span> a89 &gt; <span class="n">0</span>: <span class="f">_add_line</span>(<span class="f">bucket</span>((<span class="s">"89"</span>, wbs, src_wbs), <span class="s">"89"</span>, wbs, src_wbs), ...)
+<span class="k">if</span> remaining &gt; <span class="n">0</span>:                                   <span class="c"># 458 缺口</span>
+    <span class="f">_add_line</span>(<span class="f">bucket</span>((<span class="s">"458"</span>, wbs), <span class="s">"458"</span>, wbs), material, name, remaining, ...)</code></pre>
+
+<h3>4.2 <code>nodes/prepare.py</code> — registry 补全 + <b>458 附件程序生成</b></h3>
+<p class="mut" style="font-size:13px">每张草稿按 WBS 查 registry 补全工厂/成本中心/库存地点;458 的「附件」就是采购申请 Excel,这里用 openpyxl <b>从物料行 + WBS + 绑定信息直接生成</b>(解决了「附件无法从需求表推导」那道坎)。缺关键字段(412 缺成本中心 / 89 缺库存地点)→ 标记 skipped + needsInput,<b>不挡其它草稿</b>。</p>
+<pre><code><span class="k">if</span> wf == <span class="s">"458"</span>:
+    target = (date.<span class="f">today</span>() + timedelta(days=offset)).<span class="f">strftime</span>(<span class="s">"%Y%m%d"</span>)
+    path = <span class="f">generate_purchase_attachment</span>(entry, factory, target, attach_dir)  <span class="c"># openpyxl 生成</span>
+    structured = {<span class="s">"wbsCode"</span>:..., <span class="s">"demandFactoryCode"</span>:factory,
+                  <span class="s">"demandCompanyName"</span>: FACTORY_COMPANY_NAMES.<span class="f">get</span>(factory),
+                  <span class="s">"targetDemandDate"</span>: target, <span class="s">"normalizedPath"</span>: path}
+    entry[<span class="s">"request"</span>] = <span class="f">PurchaseFillRequest</span>(structured=structured, save=save).<span class="f">model_dump</span>(...)
+<span class="k">elif</span> wf == <span class="s">"412"</span> <span class="k">and</span> <span class="k">not</span> bound.<span class="f">get</span>(<span class="s">"costCenter"</span>):
+    entry = <span class="f">_skip</span>(entry, <span class="s">"costCenter"</span>, <span class="s">"成本中心未在 WBS 主数据中维护"</span>)   <span class="c"># 跳过但不阻塞</span></code></pre>
+
+<h3>4.3 <code>nodes/execute_plan.py</code> — 串行多草稿,失败不挡其余</h3>
+<pre><code><span class="k">for</span> entry <span class="k">in</span> entries:                                 <span class="c"># OA 单页有状态 → 串行</span>
+    <span class="k">if</span> entry.<span class="f">get</span>(<span class="s">"skipped"</span>): entry[<span class="s">"result"</span>] = {...skipped...}; <span class="k">continue</span>
+    name, cls = _ROUTER[entry[<span class="s">"workflow_id"</span>]]       <span class="c"># 412→fill_outbound / 89→… / 458→…</span>
+    result = <span class="f">getattr</span>(executor, name)(cls.<span class="f">model_validate</span>(entry[<span class="s">"request"</span>]))
+    entry[<span class="s">"result"</span>] = result.<span class="f">model_dump</span>()
+<span class="c"># 汇总:savedCount / pendingCount / 每张草稿 ok+requestId,写进 finalize 审计</span></code></pre>
+
+<h3>4.4 <code>nodes/intake.py</code> · <code>graph.py</code> — 入口与接线</h3>
+<p class="mut" style="font-size:13px"><code>parse_demand</code> 保留<b>每行 WBS</b>(单流程的 parse_workbook 会塌缩成单一 WBS);<code>build_graph(mode="acquire")</code> 组装上面的拓扑,CLI 用 <code>--mode acquire</code> 触发,前端无关入口 <code>run_workflow(mode="acquire")</code> 一致。</p>
+
+<!-- 5 -->
+<h2 id="example">⑤ 一个跑通的实例(来自 tests/router.py)</h2>
+<table>
+  <tr><th>需求表(2 行,同一 WBS C2-0225002.06.01)</th><th>该物料库存</th><th>→ 路由结果</th></tr>
+  <tr><td>4000023659 · PCR板 · 10 EA</td><td>公共仓 10</td><td><span class="tag412">412</span> 出库 10</td></tr>
+  <tr><td>4000059295 · 传感器 · 5 EA</td><td>别项目专属仓(C2-0339001.01.01)2</td><td><span class="tag89">89</span> 转储 2(转出 C2-0339001.01.01)+ <span class="tag458">458</span> 采购缺口 3</td></tr>
+</table>
+<div class="flow">
+  <span class="node">需求表 2 行</span><span class="arrow">→ 分配+分桶 →</span>
+  <span class="node" style="border-color:var(--f412)"><span class="tag412">412 草稿</span> @WBS · PCR板×10</span>
+  <span class="node" style="border-color:var(--f89)"><span class="tag89">89 草稿</span> 转出C2-0339001.01.01 · 传感器×2</span>
+  <span class="node" style="border-color:var(--f458)"><span class="tag458">458 草稿</span> @WBS · 传感器×3 + 生成附件</span>
+</div>
+<p class="mut" style="font-size:13px">测试断言:三张草稿全部保存成功(有 requestId)、458 附件文件已生成且首行表头 + 数据行(WBS/物料/数量=3)正确、缺口 note 记录在案。另两条用例验证:坏物料码在 <code>pdm_enrich</code> 就被拦(router 不跑);WBS 不在 registry → 412 草稿跳过(needsInput 成本中心)、状态 needs_input。</p>
+
+<!-- 6 -->
+<h2 id="verify">⑥ 验证 <span class="pill ok">全绿</span></h2>
+<table>
+  <tr><th>检查</th><th>结果</th></tr>
+  <tr><td><code>npm run check</code></td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>分配算法 3 场景(三向拆分 / 共享池跨行扣减 / 本项目专属仓→412)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td><code>tests/router.py</code> 端到端(3 流 fan-out + 458 附件生成 + 缺口 note + PDM 拦截 + 跳过)</td><td><span class="pill ok">PASS</span></td></tr>
+  <tr><td>CLI / runner <code>--mode acquire</code> 端到端(dry-run,审计落盘)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>回归:smoke · stage2 · stage3 · chat_demo · inventory · wbs · <b>router</b></td><td><span class="pill ok">7/7 PASS</span></td></tr>
+</table>
+
+<!-- 7 -->
+<h2 id="limits">⑦ 已知边界 & 下一步</h2>
+<div class="grid g2">
+  <div class="card"><h4 class="pill warn">需对真实数据确认</h4>
+    <ul style="font-size:13px">
+      <li><b>458 附件列模板</b>:目前用一套假定列(需求日期/项目定义/WBS/工厂/物料/数量/单位/MRP)。上真机前要拿一份真实 458 附件样例核对列名/顺序。</li>
+      <li><b>89 库存地点</b>:转入/转出都取各自 WBS 的 registry 默认库存地点(简化);真实转储可能需要更细的地点选择。</li>
+      <li><b>unit_check</b>:无 key 时只做「需求单位≠基本单位 → 停下确认」的确定性判断;<b>包装换算的智能细化(读规格文本)需要 DeepSeek key</b> 才生效。</li>
+    </ul>
+  </div>
+  <div class="card"><h4 class="pill new">下一步</h4>
+    <ul style="font-size:13px">
+      <li><b>Phase 2</b>:414 归还模式(意图触发)接入同一套 router。</li>
+      <li><b>真机联调</b>:登录态下用 HttpNodeExecutor 跑 <code>--mode acquire --dry-run</code>,核对真实 PDM/库存/WBS。</li>
+      <li><b>unit_check 上 LLM</b>:接 DeepSeek,验证「50盒/50箱」这类换算。</li>
+    </ul>
+  </div>
+</div>
+<p class="mut" style="margin-top:24px;font-size:12px">安全边界(贯穿):全程只存草稿、零提交/审批;图无任何提交路径;458 附件只在本地生成、走 OA 自带上传;喂 LLM 仍只有业务字段,不碰 SSO/cookie/token。本报告本地查看,可直接浏览器打开。</p>
+
+</div>
+</body>
+</html>

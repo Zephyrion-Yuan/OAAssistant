@@ -6,12 +6,13 @@ unaware of platform specifics.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import httpx
 
 from ..schemas import (ExecutionResult, FillRequest, InboundFillRequest,
-                       OutboundFillRequest, PurchaseFillRequest)
+                       InventoryQueryRequest, OutboundFillRequest,
+                       PurchaseFillRequest)
 from .base import ExecutorError
 
 
@@ -41,6 +42,32 @@ class HttpNodeExecutor:
             return resp.json()
         except httpx.HTTPError as exc:
             raise ExecutorError(f"query_pdm failed: {exc}") from exc
+
+    def inventory_query(self, request: InventoryQueryRequest) -> Dict[str, Any]:
+        payload = request.model_dump(exclude_none=True)
+        try:
+            resp = httpx.post(self._url("/api/oa/inventory-query"), json=payload, timeout=self._fill_timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise ExecutorError(f"inventory_query failed: {exc}") from exc
+
+    def query_wbs(self, wbs_code: str) -> Optional[Dict[str, Any]]:
+        try:
+            resp = httpx.post(self._url("/api/wbs/get"), json={"wbsCode": wbs_code}, timeout=self._timeout)
+            resp.raise_for_status()
+            body = resp.json()
+            return body.get("record") if body.get("ok") else None
+        except httpx.HTTPError as exc:
+            raise ExecutorError(f"query_wbs failed: {exc}") from exc
+
+    def resolve_wbs(self, query: str) -> Dict[str, Any]:
+        try:
+            resp = httpx.post(self._url("/api/wbs/resolve"), json={"query": query}, timeout=self._timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise ExecutorError(f"resolve_wbs failed: {exc}") from exc
 
     def _post_fill(self, path: str, request) -> ExecutionResult:
         payload = request.model_dump(exclude_none=True)

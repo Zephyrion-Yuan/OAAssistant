@@ -6,10 +6,12 @@ needs-input branches) without DeepSeek or a logged-in Edge.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 
 from ..schemas import (ExecutionResult, FillRequest, InboundFillRequest,
-                       OutboundFillRequest, PurchaseFillRequest)
+                       InventoryQueryRequest, OutboundFillRequest,
+                       PurchaseFillRequest)
 
 # materialCode -> master data (status 1 = 启用)
 _CATALOG: Dict[str, Dict[str, Any]] = {
@@ -40,6 +42,87 @@ _STOCK_LOCATIONS = {
     "设备零件仓": "D002",
     "成品仓": "A001",
 }
+
+# WBS registry (mirrors the Node /api/wbs records). The prepare node reads this
+# via query_wbs to auto-fill each draft's bound fields.
+_WBS_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "C2-0225002.06.01": {
+        "wbsCode": "C2-0225002.06.01",
+        "alias": "传感器项目, SA探针",
+        "projectDefinition": "C2-0225002",
+        "demandFactoryCode": "1010",
+        "costCenter": "CC-1010-01",
+        "purchaser": "demo-buyer",
+        "mrpController": "P22",
+        "stockLocationName": "实验室仓",
+        "stockLocationSapCode": "H001",
+        "deliveryAddress": "苏州工业园区玲珑街88号",
+        "demandDateOffsetDays": 5,
+        "remark": "紧急",
+        "status": "active",
+    },
+    # a second project's WBS — the source side of an 89 transfer test
+    "C2-0339001.01.01": {
+        "wbsCode": "C2-0339001.01.01",
+        "alias": "适配体项目",
+        "projectDefinition": "C2-0339001",
+        "demandFactoryCode": "1010",
+        "costCenter": "CC-1010-09",
+        "purchaser": "demo-buyer-2",
+        "mrpController": "M01",
+        "stockLocationName": "设备零件仓",
+        "stockLocationSapCode": "D002",
+        "demandDateOffsetDays": 5,
+        "remark": "",
+        "status": "active",
+    },
+}
+
+# materialCode -> SAP inventory rows (the Node organizeInventoryRow shape).
+# Routing-relevant fields (unrestrictedStock, specialStockIndicator) live inside
+# `fields`, exactly like the real /api/oa/inventory-query organizedRows, so the
+# inventory_query node reads them identically against mock and live backends.
+# - 4000059295: project/special stock (SOBKZ=Q) in another project's WBS  -> 89 transfer
+# - 4000023659: unrestricted stock in a public warehouse (SOBKZ blank)    -> 412 outbound
+# - any other code: no rows                                               -> 458 purchase
+_INVENTORY: Dict[str, List[Dict[str, Any]]] = {
+    "4000059295": [
+        {"factoryCode": "1010", "stockLocationCode": "H001", "stockLocationName": "实验室仓",
+         "wbsCode": "C2-0225002.06.01", "batchNumber": "", "unrestrictedStock": "2.000",
+         "specialStockIndicator": "Q", "unit": "Z12",
+         "materialDescription": "Octet链霉亲和素SA传感器#18-5019"},
+    ],
+    "4000023659": [
+        {"factoryCode": "1000", "stockLocationCode": "A001", "stockLocationName": "成品仓",
+         "wbsCode": "", "batchNumber": "", "unrestrictedStock": "10.000",
+         "specialStockIndicator": "", "unit": "EA",
+         "materialDescription": "96孔乳白框透明管PCR板（全裙边）"},
+    ],
+}
+
+
+def _organize_inventory_row(material_code: str, raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Mirror Node organizeInventoryRow: top-level identifiers + a `fields` bag."""
+    fields = {
+        "materialCode": material_code,
+        "factoryCode": raw.get("factoryCode", ""),
+        "stockLocationCode": raw.get("stockLocationCode", ""),
+        "stockLocationName": raw.get("stockLocationName", ""),
+        "wbsCode": raw.get("wbsCode", ""),
+        "unit": raw.get("unit", ""),
+        "unrestrictedStock": raw.get("unrestrictedStock", "0"),
+        "specialStockIndicator": raw.get("specialStockIndicator", ""),
+        "materialDescription": raw.get("materialDescription", ""),
+    }
+    return {
+        "materialCode": material_code,
+        "factoryCode": raw.get("factoryCode", ""),
+        "stockLocationCode": raw.get("stockLocationCode", ""),
+        "wbsCode": raw.get("wbsCode", ""),
+        "batchNumber": raw.get("batchNumber", ""),
+        "fields": fields,
+        "extraFields": {},
+    }
 
 
 class MockExecutor:
@@ -77,6 +160,72 @@ class MockExecutor:
             "organizedRows": organized,
             "mock": True,
         }
+
+    def inventory_query(self, request: InventoryQueryRequest) -> Dict[str, Any]:
+        code = str(request.materialCode or "").strip()
+        raw_rows = list(_INVENTORY.get(code, []))
+        # narrow by factory / stock-location / WBS when supplied
+        if request.factoryCode:
+            raw_rows = [r for r in raw_rows if r.get("factoryCode") == request.factoryCode]
+        if request.stockLocationCode:
+            raw_rows = [r for r in raw_rows if r.get("stockLocationCode") == request.stockLocationCode]
+        if request.wbsCode:
+            raw_rows = [r for r in raw_rows if r.get("wbsCode") == request.wbsCode]
+        organized = [_organize_inventory_row(code, r) for r in raw_rows]
+        return {
+            "ok": True,
+            "requiresLogin": False,
+            "page": {"workflowId": request.workflowId or "414"},
+            "query": {
+                "materialCode": code,
+                "factoryCode": request.factoryCode or "",
+                "stockLocationCode": request.stockLocationCode or "",
+                "wbsCode": request.wbsCode or "",
+            },
+            "search": {
+                "selectedAttemptKind": "stock-query",
+                "total": len(organized),
+                "rowCount": len(organized),
+                "fetchedPageCount": 1,
+                "truncated": False,
+                "fallbackUsed": False,
+            },
+            "rows": [dict(r) for r in raw_rows],
+            "organizedRows": organized,
+            "mock": True,
+        }
+
+    def query_wbs(self, wbs_code: str) -> Optional[Dict[str, Any]]:
+        record = _WBS_REGISTRY.get(str(wbs_code or "").strip())
+        return dict(record) if record else None
+
+    def resolve_wbs(self, query: str) -> Dict[str, Any]:
+        q = str(query or "").strip().lower()
+        if not q:
+            return {"ok": False, "error": "query is required."}
+        active = [r for r in _WBS_REGISTRY.values() if r.get("status") != "archived"]
+
+        def aliases(r):
+            return [a.strip().lower() for a in re.split(r"[,;，；]", str(r.get("alias") or "")) if a.strip()]
+
+        by_code = next((r for r in active if str(r["wbsCode"]).lower() == q), None)
+        if by_code:
+            return {"ok": True, "query": query, "matched": dict(by_code), "matchType": "code", "candidates": []}
+        by_alias = [r for r in active if q in aliases(r)]
+        if len(by_alias) == 1:
+            return {"ok": True, "query": query, "matched": dict(by_alias[0]), "matchType": "alias", "candidates": []}
+        if len(by_alias) > 1:
+            return {"ok": True, "query": query, "matched": None, "matchType": "alias-ambiguous",
+                    "candidates": [dict(r) for r in by_alias]}
+        fuzzy = []
+        for r in active:
+            hay = [str(r["wbsCode"]).lower(), str(r.get("projectDefinition") or "").lower(), *aliases(r)]
+            if any(h and (q in h or h in q) for h in hay):
+                fuzzy.append(r)
+        if len(fuzzy) == 1:
+            return {"ok": True, "query": query, "matched": dict(fuzzy[0]), "matchType": "fuzzy", "candidates": []}
+        return {"ok": True, "query": query, "matched": None,
+                "matchType": "fuzzy-ambiguous" if fuzzy else "none", "candidates": [dict(r) for r in fuzzy]}
 
     def fill_stock_transfer(self, request: FillRequest) -> ExecutionResult:
         plans = request.structured.materialPlans

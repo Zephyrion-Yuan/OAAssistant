@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 2 报告 · 归还模式 + 真实附件对齐 + LLM 必需</title>
+<style>
+  :root{
+    --bg:#0f1320; --panel:#171c2e; --panel2:#1d2438; --ink:#e6e9f2; --mut:#9aa4bf;
+    --line:#2a3350; --acc:#6ea8fe; --ok:#34d399; --warn:#fbbf24; --new:#f472b6; --code:#0b0e18;
+    --f412:#6ea8fe; --f89:#f472b6; --f458:#fbbf24; --f414:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",system-ui,Arial,sans-serif;line-height:1.6}
+  a{color:var(--acc)}
+  header{padding:30px 36px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,#141a2e,#0f1320)}
+  header h1{margin:0;font-size:25px}header p{margin:8px 0 0;color:var(--mut);max-width:960px}
+  .wrap{max-width:1160px;margin:0 auto;padding:26px 24px 80px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:20px 0 8px;color:#cdd5ee}
+  p{margin:8px 0}.mut{color:var(--mut)}
+  .grid{display:grid;gap:14px}.g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h4{margin:0 0 6px;font-size:14px}
+  .pill{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:3px 9px;white-space:nowrap}
+  .pill.ok{background:rgba(52,211,153,.16);color:var(--ok)}
+  .pill.new{background:rgba(244,114,182,.16);color:var(--new)}
+  .pill.have{background:rgba(110,168,254,.16);color:var(--acc)}
+  .pill.warn{background:rgba(251,191,36,.16);color:var(--warn)}
+  code{font-family:"JetBrains Mono",Consolas,"Courier New",monospace;font-size:12.5px}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:10px 0;font-size:12.5px;line-height:1.55}
+  pre code{color:#d7dcf0}
+  .k{color:#c792ea}.s{color:#c3e88d}.c{color:#637299;font-style:italic}.f{color:#82aaff}.n{color:#f78c6c}.t{color:#ffcb6b}
+  .note{border-left:3px solid var(--acc);background:var(--panel2);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+  .note.warn{border-color:var(--warn)}.note b{color:#fff}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd5ee}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+  .node{border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:12.5px;background:var(--panel2);white-space:nowrap}
+  .node.new{border-color:rgba(244,114,182,.6);background:rgba(244,114,182,.10)}
+  .node.have{border-color:rgba(110,168,254,.45)}
+  .node.fin{border-color:rgba(52,211,153,.5);background:rgba(52,211,153,.08)}
+  .arrow{color:var(--mut)}.br{flex-basis:100%;height:0}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  ul{margin:8px 0;padding-left:22px}li{margin:4px 0}
+  .toc{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 0}
+  .toc a{font-size:13px;text-decoration:none;border:1px solid var(--line);padding:5px 10px;border-radius:7px}
+  .tag412{color:var(--f412);font-weight:700}.tag89{color:var(--f89);font-weight:700}.tag458{color:var(--f458);font-weight:700}.tag414{color:var(--f414);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+  <h1>Phase 2 报告 · 归还模式(414) + 真实附件对齐 + LLM 必需化</h1>
+  <p>这一版完成三件事:① <b>458 采购附件按两份真实样例 1:1 对齐</b>(22 列 项目需求填写界面);② <b>去掉无 key fallback,LLM 成为编排器的必需依赖</b>(与 LangGraph 的配置要求一致),测试用 stub 保持离线;③ <b>Phase 2 — 归还模式</b>:LLM 分类「获取 / 归还」,归还走 <span class="tag414">414 入库</span>,与获取模式三流接成同一张决策图。<b>全程离线可验证,8 项 router 检查 + 7/7 套件全绿。</b></p>
+  <div class="toc">
+    <a href="#deliver">① 本轮交付</a>
+    <a href="#attach">② 458 附件对齐</a>
+    <a href="#llm">③ LLM 必需化</a>
+    <a href="#return">④ 归还模式</a>
+    <a href="#topo">⑤ 完整图拓扑</a>
+    <a href="#verify">⑥ 验证</a>
+    <a href="#limits">⑦ 剩余</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- 1 -->
+<h2 id="deliver">① 本轮交付 <span class="pill ok">完成 · 全绿</span></h2>
+<div class="grid g3">
+  <div class="card"><h4>① 真实附件对齐</h4>
+    <p class="mut" style="font-size:13px">458 附件生成器改成真实 22 列布局,列名/顺序与 <code>docs/example_files</code> 两份样例一致。新增 registry 字段 <b>送货地址</b>;<b>申请人</b>=采购人(工号-姓名)。</p>
+  </div>
+  <div class="card"><h4>② LLM 必需,无 fallback</h4>
+    <p class="mut" style="font-size:13px">新增 <code>require_structured()</code>(无结果即配置错误);<code>classify_goal</code>/<code>unit_check</code> 不再有启发式兜底。<code>llm.py</code> 加测试 stub,离线测试注入确定性响应。</p>
+  </div>
+  <div class="card"><h4>③ 归还模式(414)</h4>
+    <p class="mut" style="font-size:13px">新 <code>classify_goal</code>(LLM 分 获取/归还);归还按 (414, WBS) 分桶生成入库草稿;<code>prepare</code>/<code>execute_plan</code> 接 414。四流全接齐。</p>
+  </div>
+</div>
+
+<!-- 2 -->
+<h2 id="attach">② 458 采购附件 — 对齐真实样例</h2>
+<p class="mut" style="font-size:13px">核对了 <code>项目采购申请-SA探针微孔板.xlsx</code> 与 <code>项目采购申请-适配体试剂_cleaned.xlsx</code>:都是 sheet <b>项目需求填写界面</b> 的 22 列,行1表头、行2说明、行3+数据。生成器现在产出同样的列,把路由出的物料行 + WBS + registry 绑定信息填进去。</p>
+<table>
+  <tr><th>列(部分)</th><th>来源</th></tr>
+  <tr><td>需求类型</td><td>默认 <code>02</code>(采购申请+预留)</td></tr>
+  <tr><td>物料编码 / 物料名称 / 需求数量 / 基本计量单位</td><td>路由分配出的物料行</td></tr>
+  <tr><td>需求日期</td><td>today + registry.需求日期偏移(YYYYMMDD)</td></tr>
+  <tr><td><b>申请人</b>(工号-姓名)</td><td>registry.采购人</td></tr>
+  <tr><td>项目定义 / WBS编码 / 需求工厂代码 / MRP控制者</td><td>需求行 + registry</td></tr>
+  <tr><td>成本中心 / <b>送货地址</b> / 备注</td><td>registry(送货地址为本轮新增字段)</td></tr>
+</table>
+<div class="note warn"><b>仍需真机确认一点:</b> 真实样例还含 5 个参考页签(库存地点/采购组/MRP控制者/物料组/成本中心,供人工下拉用)。OA 导入按表头读数据主表,生成版只产出数据主表;若上真机发现导入要求带这些页签,改为「复制样例为模板再填行」即可(代码已留模板化空间)。</div>
+
+<!-- 3 -->
+<h2 id="llm">③ LLM 必需化(去掉无 key fallback)</h2>
+<p class="mut" style="font-size:13px">按你的指示,LLM 是编排器的必需依赖(和 LangGraph 要配模型一致),不再为「没有 key」做启发式兜底。</p>
+<pre><code><span class="c"># llm.py — 必需版:无结果即配置错误,不静默降级</span>
+<span class="k">def</span> <span class="f">require_structured</span>(settings, schema, system, user) -> T:
+    result = <span class="f">extract_structured</span>(settings, schema, system, user)
+    <span class="k">if</span> result <span class="k">is</span> <span class="k">None</span>:
+        <span class="k">raise</span> <span class="f">RuntimeError</span>(<span class="s">"LLM understanding required — set DEEPSEEK_API_KEY ..."</span>)
+    <span class="k">return</span> result
+
+<span class="c"># 测试 seam:注入确定性响应,离线跑 LLM-必需节点(无需 key / 网络)</span>
+<span class="k">def</span> <span class="f">set_test_responder</span>(fn): ...   <span class="c"># extract_structured 优先走它</span></code></pre>
+<p class="mut" style="font-size:13px"><code>classify_goal</code> 必调 LLM;<code>unit_check</code> 仅当需求单位≠基本单位时调 LLM(等价单位不浪费调用)。单流程旧图的 understand/diagnose 启发式未动,旧测试不受影响。</p>
+
+<!-- 4 -->
+<h2 id="return">④ Phase 2 — 归还模式(414)</h2>
+<p class="mut" style="font-size:13px"><code>classify_goal</code> 用 LLM 把请求分成 <b>获取</b>(领用/采购物料)或 <b>归还</b>(用完还剩、退公共仓)。归还时<b>不查库存</b>,直接按 (414, WBS) 把需求行分桶成入库草稿;<code>prepare</code> 据 registry 补库存地点建 <code>InboundFillRequest</code>;<code>execute_plan</code> 调 <code>fill_inbound</code>。</p>
+<pre><code><span class="c"># route_workflow.py — 归还分支</span>
+<span class="k">if</span> state.<span class="f">get</span>(<span class="s">"goal"</span>) == <span class="s">"return"</span>:
+    plan = <span class="f">allocate_return</span>(demand_rows)   <span class="c"># 每个 (414, WBS) 一张入库草稿,无库存 fan-out</span>
+<span class="k">else</span>:
+    plan = <span class="f">allocate</span>(demand_rows, inventory)  <span class="c"># 获取:412 > 89 > 458</span></code></pre>
+
+<!-- 5 -->
+<h2 id="topo">⑤ 完整图拓扑(router 模式,获取 + 归还合一)</h2>
+<div class="flow">
+  <span class="node have">intake<br><span class="tag">parse_demand</span></span><span class="arrow">→</span>
+  <span class="node have">preflight</span><span class="arrow">→</span>
+  <span class="node new">classify_goal<br><span class="tag">LLM 获取/归还</span></span><span class="arrow">→</span>
+  <span class="node have">pdm_enrich</span><span class="arrow">→</span>
+  <span class="node new">unit_check<br><span class="tag">LLM 单位换算</span></span>
+  <span class="br"></span>
+  <span class="arrow">├ 获取 →</span>
+  <span class="node have">inventory_query</span><span class="arrow">→</span>
+  <span class="node new">route_workflow<br><span class="tag"><span class="tag412">412</span>/<span class="tag89">89</span>/<span class="tag458">458</span></span></span>
+  <span class="br"></span>
+  <span class="arrow">└ 归还 ───────────────→</span>
+  <span class="node new">route_workflow<br><span class="tag"><span class="tag414">414</span> 按WBS</span></span>
+  <span class="br"></span>
+  <span class="arrow">⇒</span>
+  <span class="node new">prepare<br><span class="tag">registry补全 + 生成458附件</span></span><span class="arrow">→</span>
+  <span class="node new">execute_plan<br><span class="tag">串行多草稿·dry-run</span></span><span class="arrow">→</span>
+  <span class="node fin">finalize</span><span class="arrow">→ END</span>
+</div>
+<div class="legend">
+  <span><span class="dot" style="background:var(--acc)"></span>复用</span>
+  <span><span class="dot" style="background:var(--new)"></span>本轮/前轮新建</span>
+  <span><span class="dot" style="background:var(--ok)"></span>终点</span>
+</div>
+<p class="mut" style="font-size:13px">任一上游阻塞结果(坏物料码 / 单位需审核 / 未登录 / 无草稿)短路到 finalize(可恢复)。<b>单流程旧图(mode=single)完全不变</b>。CLI:<code>python -m oa_orchestrator.run --mode acquire</code>。</p>
+
+<!-- 6 -->
+<h2 id="verify">⑥ 验证 <span class="pill ok">全绿</span></h2>
+<table>
+  <tr><th>检查</th><th>结果</th></tr>
+  <tr><td><code>npm run check</code></td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>458 附件 vs 真实样例(22 列表头一致 + 关键列映射:需求类型/物料/数量/需求日期/申请人/WBS/工厂)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td><code>tests/router.py</code> 8 项:3 流 fan-out · 22 列附件 · 缺口 note · PDM 拦截 · 缺 registry 跳过 · <b>归还 414</b> · <b>单位误用拦截</b></td><td><span class="pill ok">PASS</span></td></tr>
+  <tr><td>WBS registry 含 deliveryAddress 字段往返(Node)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>回归:smoke · stage2 · stage3 · chat_demo · inventory · wbs · router</td><td><span class="pill ok">7/7 PASS</span></td></tr>
+</table>
+
+<!-- 7 -->
+<h2 id="limits">⑦ 剩余(需登录态 / 真机)</h2>
+<div class="grid g2">
+  <div class="card"><h4 class="pill warn">只剩需真机的事</h4>
+    <ul style="font-size:13px">
+      <li><b>真机联调</b>:登录态下 <code>HttpNodeExecutor</code> 跑 <code>--mode acquire --dry-run</code>,核对真实 PDM/库存/WBS/各流填单 + 458 附件上传是否被 OA 接受。</li>
+      <li><b>458 参考页签</b>:若 OA 导入要求附件带 5 个下拉页签,切到「样例为模板」生成。</li>
+      <li><b>真 DeepSeek</b>:把 stub 换成真 key 验证 classify_goal/unit_check(「50盒 vs 50箱」)的判断质量。</li>
+      <li><b>公共仓/无库存分支</b>的真实 SOBKZ 语义仍只在 mock 里(项目库存 Q 已真机验过)。</li>
+    </ul>
+  </div>
+  <div class="card"><h4>四流全接,离线闭环已成型</h4>
+    <p style="font-size:13px" class="mut">获取(412/89/458)+ 归还(414)接成一张 LLM 分意图、库存驱动、按 WBS 分桶的决策图;附件按真实样例生成;LLM 作为必需理解层。剩下的都是<b>需要登录态/真网络</b>才能做的真机校验 —— 离线能做的已做完。</p>
+  </div>
+</div>
+
+<p class="mut" style="margin-top:24px;font-size:12px">安全边界(贯穿):全程只存草稿、零提交/审批;图无提交路径;458 附件本地生成、走 OA 自带上传;喂 LLM 仅业务字段,不碰 SSO/cookie/token。报告本地查看,浏览器直接打开。</p>
+
+</div>
+</body>
+</html>

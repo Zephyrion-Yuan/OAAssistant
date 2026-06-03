@@ -25,6 +25,8 @@ class GraphState(TypedDict, total=False):
     thread_id: str
     interactive: bool                   # interactive ask-loop vs unattended NEEDS_INPUT
     save: bool                          # save draft after filling (False = dry-run)
+    mode: str                           # "single" (one workflow) | "acquire" (Phase-1 router)
+    goal: str                           # router intent: "acquire" | "return" (classify_goal)
     workflow_id: str                    # which workflow (Stage-3 router seam; default "89")
     user_id: Optional[str]              # personalization seam
     profile: Optional[Dict[str, Any]]   # static user defaults (personalize node)
@@ -34,6 +36,10 @@ class GraphState(TypedDict, total=False):
     intent: Optional[Dict[str, Any]]           # Intent dump
     missing: List[str]                         # missing required slots
     pdm: Optional[Dict[str, Any]]              # per-material enrichment/validation
+    inventory: Optional[Dict[str, Any]]        # per-material SAP stock + route hints (Stage-3b)
+    unit_review: Optional[List[Dict[str, Any]]]  # unit_check: suspected unit mismatches
+    plan: Optional[Dict[str, Any]]             # AllocationPlan dump (route_workflow)
+    plan_results: Optional[List[Dict[str, Any]]]  # per-draft execution results (execute_plan)
     resolved: Optional[Dict[str, Any]]         # FillRequest dump (sans structured)
     result: Optional[Dict[str, Any]]           # ExecutionResult dump
     diagnosis: Optional[Dict[str, Any]]        # Diagnosis dump
@@ -50,13 +56,16 @@ class GraphState(TypedDict, total=False):
 def new_state(request: str, excel_path: Optional[str], thread_id: str,
               interactive: bool, save: bool, workflow_id: str = "89",
               user_id: Optional[str] = None,
-              profile: Optional[Dict[str, Any]] = None) -> GraphState:
+              profile: Optional[Dict[str, Any]] = None,
+              mode: str = "single") -> GraphState:
     return GraphState(
         request=request,
         excel_path=excel_path,
         thread_id=thread_id,
         interactive=interactive,
         save=save,
+        mode=mode,
+        goal="acquire",
         workflow_id=workflow_id,
         user_id=user_id,
         profile=profile,
@@ -64,6 +73,10 @@ def new_state(request: str, excel_path: Optional[str], thread_id: str,
         intent=None,
         missing=[],
         pdm=None,
+        inventory=None,
+        unit_review=None,
+        plan=None,
+        plan_results=None,
         resolved=None,
         result=None,
         diagnosis=None,

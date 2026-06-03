@@ -18,7 +18,7 @@ from openpyxl import load_workbook
 
 from ..config import get_settings
 from ..intake_parsers import parse_inbound, parse_outbound, parse_purchase
-from ..schemas import BusinessInput, MaterialPlan
+from ..schemas import BusinessInput, DemandRow, MaterialPlan
 from ..state import STATUS_FAILED
 from .. import store
 
@@ -183,6 +183,77 @@ def parse_workbook(input_path: str) -> BusinessInput:
     )
 
 
+def parse_demand(input_path: str) -> BusinessInput:
+    """Parse the unified 需求 sheet for the acquire-mode router.
+
+    Unlike parse_workbook (which collapses to one WBS), this keeps every row's
+    WBS so route_workflow can bucket drafts by WBS. It also builds the
+    per-material aggregate (materialPlans) that pdm_enrich/unit_check validate.
+    """
+    input_file = Path(input_path).expanduser().resolve()
+    if not input_file.exists():
+        raise FileNotFoundError(f"Excel file does not exist: {input_file}")
+
+    wb = load_workbook(input_file, data_only=True)
+    ws = _find_sheet(wb, MAIN_SHEET_NAMES, fallback_index=0)
+    columns, _headers = _resolve_columns(ws)
+    required = ["materialCode", "purchaseQuantity", "wbsCode"]
+    missing = [key for key in required if key not in columns]
+    if missing:
+        raise ValueError(f"需求 sheet is missing required columns: {missing!r}.")
+
+    rows = _data_row_indices(ws, 3, [columns[key] for key in required])
+    if not rows:
+        raise ValueError("需求 sheet contains no data rows from row 3 onward.")
+
+    def cell(r: int, key: str) -> str:
+        col = columns.get(key)
+        return _normalize_cell(ws.cell(row=r, column=col).value) if col else ""
+
+    demand_rows: List[DemandRow] = []
+    quantity_totals: Dict[str, Decimal] = {}
+    names: Dict[str, str] = {}
+    units: Dict[str, str] = {}
+    for r in rows:
+        code = cell(r, "materialCode")
+        if not code:
+            continue
+        qty = _parse_decimal(ws.cell(row=r, column=columns["purchaseQuantity"]).value, f"Row {r} 数量")
+        demand_rows.append(DemandRow(
+            wbsCode=cell(r, "wbsCode"),
+            demandFactoryCode=cell(r, "demandFactoryCode"),
+            projectDefinition=cell(r, "projectDefinition"),
+            materialCode=code,
+            materialName=cell(r, "materialName"),
+            quantity=_decimal_text(qty),
+            unit=cell(r, "unit"),
+            mrpController=cell(r, "mrpController"),
+        ))
+        quantity_totals[code] = quantity_totals.get(code, Decimal(0)) + qty
+        names.setdefault(code, cell(r, "materialName"))
+        units.setdefault(code, cell(r, "unit"))
+
+    if not demand_rows:
+        raise ValueError("需求 sheet has rows but none carry a 物料编码.")
+
+    material_plans = [
+        MaterialPlan(materialCode=code, materialName=names.get(code, ""),
+                     quantity=_decimal_text(qty), unit=units.get(code, ""))
+        for code, qty in sorted(quantity_totals.items())
+    ]
+    first = demand_rows[0]
+    return BusinessInput(
+        projectDefinition=first.projectDefinition,
+        wbsCode=first.wbsCode,
+        demandFactoryCode=first.demandFactoryCode,
+        mrpController=first.mrpController,
+        materialPlans=material_plans,
+        quantityByMaterialCode={code: _decimal_text(qty) for code, qty in sorted(quantity_totals.items())},
+        demandRows=demand_rows,
+        sourceFile=str(input_file),
+    )
+
+
 def _material_plans_from_rows(rows: List[Dict[str, Any]], quantity_key: str) -> List[MaterialPlan]:
     """Aggregate per-workflow Excel `materialRows` into MaterialPlans so the
     workflow-agnostic pdm_enrich node can validate the codes."""
@@ -276,14 +347,16 @@ def intake_node(state: Dict[str, Any]) -> Dict[str, Any]:
         history.append({"node": "intake", "ok": False, "error": "No excel_path and no stored input."})
         return {"status": STATUS_FAILED, "history": history,
                 "result": {"ok": False, "error": "No excel_path provided and no stored business input."}}
+    mode = state.get("mode", "single")
     try:
-        business = _parse_by_workflow(workflow_id, excel_path, state)
+        business = parse_demand(excel_path) if mode == "acquire" else _parse_by_workflow(workflow_id, excel_path, state)
     except Exception as exc:  # noqa: BLE001
         history.append({"node": "intake", "ok": False, "error": str(exc)})
         return {"status": STATUS_FAILED, "history": history,
                 "result": {"ok": False, "error": f"intake failed: {exc}"}}
 
     store.save_business_input(settings.store_path, state.get("thread_id", ""), business, business.sourceFile)
-    history.append({"node": "intake", "ok": True, "workflow": workflow_id,
-                    "materials": len(business.materialPlans), "source": "excel"})
+    history.append({"node": "intake", "ok": True, "mode": mode, "workflow": workflow_id,
+                    "materials": len(business.materialPlans),
+                    "demandRows": len(business.demandRows), "source": "excel"})
     return {"business_input": business.model_dump(), "history": history}

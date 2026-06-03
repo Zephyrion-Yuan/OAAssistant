@@ -29,6 +29,26 @@ class MaterialPlan(BaseModel):
         return "" if v is None else str(v)
 
 
+class DemandRow(BaseModel):
+    """One row of the unified 需求 sheet. WBS is per-row (drafts bucket by WBS)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    wbsCode: str = ""
+    demandFactoryCode: str = ""
+    projectDefinition: str = ""
+    materialCode: str
+    materialName: str = ""
+    quantity: str = "0"
+    unit: str = ""
+    mrpController: str = ""
+
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def _coerce_quantity(cls, v):  # noqa: N805
+        return "0" if v is None or str(v).strip() == "" else str(v)
+
+
 class BusinessInput(BaseModel):
     """Structured Excel content (replaces passing a file path to Node)."""
 
@@ -47,6 +67,10 @@ class BusinessInput(BaseModel):
     # (cost center, material rows, normalized attachment path, etc.) so their
     # build_request can reconstruct the exact Node payload.
     structured: Optional[Dict[str, Any]] = None
+    # Phase 1 router (acquire mode): per-row demand from the unified 需求 sheet,
+    # WBS preserved per row (drafts bucket by WBS). materialPlans above stays the
+    # per-material aggregate that pdm_enrich/unit_check validate.
+    demandRows: List[DemandRow] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +191,109 @@ class PurchaseFillRequest(BaseModel):
     projectType: Optional[str] = None
     loginTimeoutMs: Optional[int] = None
     save: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# Inventory query (cross-system read capability — peer of query_pdm)
+#
+# Mirrors the Node POST /api/oa/inventory-query contract. Material code alone is
+# enough; factory/stock-location/WBS narrow the search. This is the Stage-3b
+# prerequisite the route_workflow decision node consumes (no stock -> 458;
+# public-warehouse stock -> 412; other-project special stock -> 89; ...).
+# --------------------------------------------------------------------------- #
+class InventoryQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    materialCode: Optional[str] = None
+    factoryCode: Optional[str] = None
+    stockLocationCode: Optional[str] = None
+    wbsCode: Optional[str] = None
+    workflowId: Optional[str] = None
+    pageSize: Optional[int] = None
+    maxPages: Optional[int] = None
+    preferWbs: Optional[bool] = None
+    fallbackWarehouse: Optional[bool] = None
+    loginTimeoutMs: Optional[int] = None
+    conditions: Dict[str, Any] = Field(default_factory=dict)
+
+
+class InventoryRow(BaseModel):
+    """One organized inventory row (the Node organizeInventoryRow shape)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    materialCode: str = ""
+    factoryCode: str = ""
+    stockLocationCode: str = ""
+    stockLocationName: str = ""
+    wbsCode: str = ""
+    batchNumber: str = ""
+    unrestrictedStock: str = "0"
+    specialStockIndicator: str = ""  # "Q" = project/special stock; "" = general
+    unit: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# WBS registry (Node-owned business master data; orchestrator reads via query_wbs)
+# Mirrors the Node /api/wbs record shape. The prepare node looks a draft's WBS up
+# here to auto-fill bound fields (factory/cost center/purchaser/stock location/…).
+# --------------------------------------------------------------------------- #
+class WbsRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    wbsCode: str
+    alias: str = ""            # 别称: comma/;-separated nicknames for fuzzy/NL reference
+    projectDefinition: str = ""
+    demandFactoryCode: str = ""
+    costCenter: str = ""
+    purchaser: str = ""
+    mrpController: str = ""
+    stockLocationName: str = ""
+    stockLocationSapCode: str = ""
+    deliveryAddress: str = ""
+    demandDateOffsetDays: Optional[int] = None
+    remark: str = ""
+    status: str = "active"
+
+
+# --------------------------------------------------------------------------- #
+# Routing (Phase 1) — the allocation plan route_workflow produces and prepare/
+# execute_plan consume. One AllocationEntry == one OA draft, keyed by (flow, WBS)
+# (89 also by source WBS). materialLines are the per-material quantities routed
+# to this draft. prepare fills `bound`/`request`; execute_plan attaches `result`.
+# --------------------------------------------------------------------------- #
+class MaterialLine(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    materialCode: str
+    materialName: str = ""
+    quantity: str = "0"
+    unit: str = ""
+
+
+class AllocationEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    workflow_id: str                         # "412" | "89" | "458"
+    wbsCode: str = ""                        # demand WBS (the draft / bucket key)
+    transferOutWbs: Optional[str] = None     # 89 only: source project WBS
+    demandFactoryCode: str = ""
+    projectDefinition: str = ""
+    mrpController: str = ""
+    materialLines: List[MaterialLine] = Field(default_factory=list)
+    bound: Dict[str, Any] = Field(default_factory=dict)   # filled by prepare (from registry)
+    request: Optional[Dict[str, Any]] = None              # executor payload (built by prepare)
+    skipped: bool = False
+    skipReason: Optional[str] = None
+    needsInput: Optional[Dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None               # attached by execute_plan
+
+
+class AllocationPlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    entries: List[AllocationEntry] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #

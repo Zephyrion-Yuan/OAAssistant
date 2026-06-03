@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 0 报告 · WBS 主数据 + 库存驱动 Router 框架</title>
+<style>
+  :root{
+    --bg:#0f1320; --panel:#171c2e; --panel2:#1d2438; --ink:#e6e9f2; --mut:#9aa4bf;
+    --line:#2a3350; --acc:#6ea8fe; --ok:#34d399; --warn:#fbbf24; --new:#f472b6; --code:#0b0e18;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,Arial,sans-serif;line-height:1.6}
+  a{color:var(--acc)}
+  header{padding:30px 36px;border-bottom:1px solid var(--line);
+    background:linear-gradient(135deg,#141a2e,#0f1320)}
+  header h1{margin:0;font-size:25px}
+  header p{margin:8px 0 0;color:var(--mut);max-width:900px}
+  .wrap{max-width:1140px;margin:0 auto;padding:26px 24px 80px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:20px 0 8px;color:#cdd5ee}
+  p{margin:8px 0}
+  .mut{color:var(--mut)}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h4{margin:0 0 6px;font-size:14px}
+  .pill{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:3px 9px;white-space:nowrap}
+  .pill.ok{background:rgba(52,211,153,.16);color:var(--ok)}
+  .pill.new{background:rgba(244,114,182,.16);color:var(--new)}
+  .pill.have{background:rgba(110,168,254,.16);color:var(--acc)}
+  .pill.warn{background:rgba(251,191,36,.16);color:var(--warn)}
+  code{font-family:"JetBrains Mono",Consolas,"Courier New",monospace;font-size:12.5px}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+    overflow:auto;margin:10px 0;font-size:12.5px;line-height:1.55}
+  pre code{color:#d7dcf0}
+  .k{color:#c792ea}.s{color:#c3e88d}.c{color:#637299;font-style:italic}.f{color:#82aaff}.n{color:#f78c6c}.t{color:#ffcb6b}
+  .note{border-left:3px solid var(--acc);background:var(--panel2);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+  .note.warn{border-color:var(--warn)}
+  .note b{color:#fff}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd5ee}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+  .node{border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:12.5px;background:var(--panel2);white-space:nowrap}
+  .node.have{border-color:rgba(110,168,254,.5)}
+  .node.new{border-color:rgba(244,114,182,.6);background:rgba(244,114,182,.08)}
+  .node.p0{border-color:rgba(52,211,153,.6);background:rgba(52,211,153,.08)}
+  .arrow{color:var(--mut)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .fileitem{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:#cdd5ee}
+  .tag{font-size:11px;color:var(--mut)}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .toc{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 0}
+  .toc a{font-size:13px;text-decoration:none;border:1px solid var(--line);padding:5px 10px;border-radius:7px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Phase 0 报告 · WBS 主数据库 与「库存驱动 WBS-fan-out Router」框架</h1>
+  <p>这份报告给你两样东西:① <b>整体框架的可视化全景</b>(我们四轮对话敲定的设计、最终图拓扑、双层架构);② <b>Phase 0 已交付代码的逐文件解读</b>(WBS 主数据库 + 编排层只读访问)。面向「熟 Python、想快速理解全局与关键代码」的你。</p>
+  <div class="toc">
+    <a href="#big">① 框架全景</a>
+    <a href="#topo">② 最终图拓扑</a>
+    <a href="#p0">③ Phase 0 交付清单</a>
+    <a href="#walk">④ 关键文件解读</a>
+    <a href="#flow">⑤ 数据流</a>
+    <a href="#verify">⑥ 验证结果</a>
+    <a href="#next">⑦ 下一步</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ===================== 1 ===================== -->
+<h2 id="big">① 框架全景:这套系统在做什么</h2>
+<p>目标:用户一句自然语言 + 一张「需求」表 → 系统自动判断每个物料该走<b>采购/出库/转储/入库</b>哪条 OA 流程,填出草稿(<b>永不提交</b>)。判断依据是<b>库存在哪个仓、属于哪个项目</b>。</p>
+
+<div class="grid g2">
+  <div class="card">
+    <h4>双层架构(硬约束)</h4>
+    <p class="mut" style="font-size:13px">LLM 只做<b>理解</b>(意图/单位换算/追问/失败归因),Playwright 是<b>确定性的手</b>,永不自动提交。两层之间只走 HTTP 契约。</p>
+    <table style="font-size:12px">
+      <tr><th>层</th><th>职责</th></tr>
+      <tr><td>Node「手」</td><td>填单、查 PDM、查库存、<b class="pill have">新 WBS 主数据</b>;托管 Edge;确定性</td></tr>
+      <tr><td>Python「脑」(LangGraph)</td><td>意图理解、路由决策、补全、自检;只经 Executor 契约碰 Node</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h4>四流路由规则(已锁定)</h4>
+    <table style="font-size:12px">
+      <tr><th>库存情形</th><th>流程</th></tr>
+      <tr><td>无库存 / 数量缺口</td><td>458 采购</td></tr>
+      <tr><td>公共库仓 · 本项目专属仓</td><td>412 出库</td></tr>
+      <tr><td>纯别项目专属仓(SOBKZ=Q)</td><td>89 转储</td></tr>
+      <tr><td>用完归还(意图触发)</td><td>414 入库</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="note">
+  <b>草稿最小单位 = (流, WBS)。</b> 每物料按需求量分配(优先级 412&gt;89&gt;458),跨物料再按 <b>WBS</b> 分桶 —— 同一个流里不同 WBS 拆成不同草稿。WBS 高度绑定工厂/成本中心/采购人等信息,所以需要一个<b>用户可维护的 WBS 主数据库</b>(本次 Phase 0 的核心)。
+</div>
+
+<!-- ===================== 2 ===================== -->
+<h2 id="topo">② 最终图拓扑</h2>
+<div class="flow">
+  <span class="node have">intake<br><span class="tag">需求表→结构化</span></span><span class="arrow">→</span>
+  <span class="node have">preflight</span><span class="arrow">→</span>
+  <span class="node have">understand<br><span class="tag">意图:获取/归还</span></span><span class="arrow">→</span>
+  <span class="node have">personalize</span><span class="arrow">→</span>
+  <span class="node have">pdm_enrich<br><span class="tag">校验+补规格</span></span><span class="arrow">→</span>
+  <span class="node new">unit_check<br><span class="tag">LLM 单位换算</span></span><span class="arrow">→</span>
+  <span class="node p0">inventory_query<br><span class="tag">查库存+分类</span></span>
+</div>
+<div class="flow">
+  <span class="arrow">↳</span>
+  <span class="node new">route_workflow<br><span class="tag">分配+按WBS分桶</span></span><span class="arrow">→</span>
+  <span class="node new">prepare<br><span class="tag">查WBS补全+生成458附件</span></span><span class="arrow">→</span>
+  <span class="node new">execute_plan<br><span class="tag">串行多草稿·dry-run</span></span><span class="arrow">→</span>
+  <span class="node have">verify</span><span class="arrow">→</span>
+  <span class="node have">[diagnose]</span><span class="arrow">→</span>
+  <span class="node have">finalize<br><span class="tag">汇总N草稿</span></span>
+</div>
+<div class="legend">
+  <span><span class="dot" style="background:var(--acc)"></span>已有(前序 Stage)</span>
+  <span><span class="dot" style="background:var(--ok)"></span>本轮/上一轮已建(inventory_query)</span>
+  <span><span class="dot" style="background:var(--new)"></span>Phase 1/2 待建</span>
+</div>
+<p class="mut" style="font-size:13px">Phase 0 不在这条主链上 —— 它建的是 <code>prepare</code> 节点要查的那个 <b>WBS 主数据库</b>,以及编排层访问它的 <code>query_wbs</code> 能力。先把「补全所依赖的数据底座」搭好,Phase 1 的 route/prepare 才有据可查。</p>
+
+<!-- ===================== 3 ===================== -->
+<h2 id="p0">③ Phase 0 交付清单 <span class="pill ok">全部完成 · 验证通过</span></h2>
+<div class="grid g3">
+  <div class="card"><h4>Node「手」侧</h4>
+    <p class="fileitem">src/automation/wbsRegistry.js <span class="pill ok">新</span></p>
+    <p class="tag">JSON 文件存储 + 原子写 + 合并式 upsert + CRUD</p>
+    <p class="fileitem">src/server.js <span class="pill have">改</span></p>
+    <p class="tag">/api/wbs/list·get·upsert·archive·delete(zod 校验)</p>
+  </div>
+  <div class="card"><h4>控制面板</h4>
+    <p class="fileitem">public/index.html · app.js · styles.css <span class="pill have">改</span></p>
+    <p class="tag">WBS 管理页:表单 + 列表表格 + 编辑/归档/删除(两步内联确认,无阻塞弹窗)</p>
+  </div>
+  <div class="card"><h4>Python「脑」侧</h4>
+    <p class="fileitem">schemas.py · executors/{base,http_node,mock}.py <span class="pill have">改</span></p>
+    <p class="tag">WbsRecord + Executor 契约新增 query_wbs</p>
+    <p class="fileitem">tests/wbs.py <span class="pill ok">新</span></p>
+    <p class="tag">离线验证 query_wbs + 契约符合</p>
+  </div>
+</div>
+
+<!-- ===================== 4 ===================== -->
+<h2 id="walk">④ 关键文件代码解读</h2>
+
+<h3>4.1 <code>src/automation/wbsRegistry.js</code> — 数据底座(Node 持有的唯一真相源)</h3>
+<p class="mut" style="font-size:13px">为什么 JSON 文件而非 SQLite:数据量小、零新依赖、跨平台。<b>合并式 upsert</b> 是关键设计 —— 部分更新不会抹掉未提交字段。</p>
+<pre><code><span class="c">// 存储:.runtime/wbs-registry.json = { version, records: { "<wbs>": {...} } }</span>
+<span class="c">// 原子写:先写临时文件再 rename,避免半截写入损坏。</span>
+<span class="k">function</span> <span class="f">saveRegistry</span>(registry){
+  ensureDir(runtimeDir);
+  <span class="k">const</span> tmp = <span class="s">`${REGISTRY_PATH}.${process.pid}.tmp`</span>;
+  fs.<span class="f">writeFileSync</span>(tmp, <span class="t">JSON</span>.<span class="f">stringify</span>(registry, <span class="k">null</span>, <span class="n">2</span>), <span class="s">'utf8'</span>);
+  fs.<span class="f">renameSync</span>(tmp, REGISTRY_PATH); <span class="c">// 原子替换</span>
+}
+
+<span class="c">// 合并式 upsert:只有 input 里出现的字段才覆盖;已有记录的其余字段保留。</span>
+<span class="k">export function</span> <span class="f">upsertWbs</span>(input = {}){
+  <span class="k">const</span> wbsCode = <span class="f">normalizeText</span>(input.wbsCode);
+  <span class="k">if</span>(!wbsCode) <span class="k">return</span> { ok:<span class="k">false</span>, error:<span class="s">'wbsCode is required.'</span> };
+  <span class="k">const</span> registry = <span class="f">loadRegistry</span>();
+  <span class="k">const</span> existing = registry.records[wbsCode];
+  <span class="k">const</span> record = existing ? { ...existing } : <span class="f">emptyRecordShape</span>();
+  <span class="k">for</span>(<span class="k">const</span> field <span class="k">of</span> TEXT_FIELDS){
+    <span class="k">if</span>(input[field] !== <span class="k">undefined</span>) record[field] = <span class="f">normalizeText</span>(input[field]); <span class="c">// 只覆盖提供的字段</span>
+  }
+  <span class="c">// ...offset/status 同理;createdAt 保留,updatedAt 刷新...</span>
+  registry.records[wbsCode] = record;
+  <span class="f">saveRegistry</span>(registry);
+  <span class="k">return</span> { ok:<span class="k">true</span>, created:!existing, record };
+}</code></pre>
+<div class="note"><b>实测捕获的 bug:</b> 第一版 upsert 是<b>整体替换</b>,部分更新(只传 purchaser)会把 demandDateOffsetDays 抹成 null。改成合并式后,「改采购人」不再误伤其它字段。CRUD/归档/删除/字段保留均已逐项验证。</div>
+
+<h3>4.2 <code>src/server.js</code> — REST 路由(zod 校验,沿用现有零框架风格)</h3>
+<pre><code><span class="c">// GET 列表(支持 ?includeArchived=1);其余走 POST。</span>
+<span class="k">if</span>(request.method===<span class="s">'GET'</span> && url.pathname===<span class="s">'/api/wbs/list'</span>){
+  <span class="k">const</span> includeArchived = [...].includes((url.searchParams.<span class="f">get</span>(<span class="s">'includeArchived'</span>)||<span class="s">''</span>));
+  <span class="f">sendJson</span>(response, <span class="n">200</span>, <span class="f">listWbs</span>({ includeArchived })); <span class="k">return</span>;
+}
+<span class="c">// POST get / upsert / archive / delete —— upsert 走 zod schema 校验</span>
+<span class="k">if</span>(url.pathname===<span class="s">'/api/wbs/upsert'</span>){ <span class="f">sendJson</span>(response,<span class="n">200</span>,<span class="f">handleWbsUpsert</span>(body)); <span class="k">return</span>; }
+<span class="k">if</span>(url.pathname===<span class="s">'/api/wbs/get'</span>){ <span class="f">sendJson</span>(response,<span class="n">200</span>,<span class="f">handleWbsKey</span>(body,getWbs,<span class="s">'/api/wbs/get'</span>)); <span class="k">return</span>; }</code></pre>
+
+<h3>4.3 <code>public/</code> — 控制面板 WBS 管理页</h3>
+<p class="mut" style="font-size:13px">一个全宽 <code>&lt;section&gt;</code>:上方表单(增/改),下方列表(编辑/归档/删除)。两处刻意的安全/稳健选择:</p>
+<ul>
+  <li><b>DOM 安全渲染</b>:表格用 <code>createElement</code>+<code>textContent</code>,不把用户输入塞进 innerHTML(防注入)。</li>
+  <li><b>删除两步内联确认</b>:第一次点「删除」变「确认删除?」(3 秒后复原),第二次才真删 —— <b>不用 <code>confirm()</code> 原生弹窗</b>(原生弹窗会阻塞,且与浏览器自动化冲突)。</li>
+</ul>
+<pre><code><span class="c">// app.js: 列表用 GET(无 payload→GET),变更用 POST(有 payload→POST)</span>
+<span class="k">async function</span> <span class="f">loadWbs</span>(){
+  <span class="k">const</span> q = wbsShowArchived.checked ? <span class="s">'?includeArchived=1'</span> : <span class="s">''</span>;
+  <span class="k">const</span> result = <span class="k">await</span> <span class="f">api</span>(<span class="s">`/api/wbs/list${q}`</span>);
+  wbsTableBody.<span class="f">replaceChildren</span>(...(result.records||[]).<span class="f">map</span>(renderWbsRow));
+}</code></pre>
+
+<h3>4.4 编排层:<code>WbsRecord</code> + Executor 契约 <code>query_wbs</code></h3>
+<p class="mut" style="font-size:13px">关键架构点:<b>registry 归 Node 所有,Python 脑只读、且只经 HTTP 契约访问</b> —— 与「设备无关」原则一致(Mock 走内存,HttpNode 走真实服务)。</p>
+<pre><code><span class="c"># base.py —— 契约里新增一个只读方法</span>
+<span class="k">def</span> <span class="f">query_wbs</span>(<span class="k">self</span>, wbs_code: str) -> Optional[Dict[str, Any]]:
+    <span class="s">"""查 WBS 主数据;返回记录 dict 或 None(prepare 用来自动补全各草稿绑定字段)。"""</span>
+    ...
+
+<span class="c"># http_node.py —— 真实后端:POST /api/wbs/get</span>
+<span class="k">def</span> <span class="f">query_wbs</span>(<span class="k">self</span>, wbs_code):
+    body = httpx.<span class="f">post</span>(<span class="k">self</span>._url(<span class="s">"/api/wbs/get"</span>), json={<span class="s">"wbsCode"</span>: wbs_code}, ...).<span class="f">json</span>()
+    <span class="k">return</span> body.<span class="f">get</span>(<span class="s">"record"</span>) <span class="k">if</span> body.<span class="f">get</span>(<span class="s">"ok"</span>) <span class="k">else</span> <span class="k">None</span>
+
+<span class="c"># mock.py —— 离线假后端:内存 _WBS_REGISTRY(含已验证的 C2-0225002.06.01)</span>
+<span class="k">def</span> <span class="f">query_wbs</span>(<span class="k">self</span>, wbs_code):
+    record = _WBS_REGISTRY.<span class="f">get</span>(str(wbs_code <span class="k">or</span> <span class="s">""</span>).<span class="f">strip</span>())
+    <span class="k">return</span> dict(record) <span class="k">if</span> record <span class="k">else</span> <span class="k">None</span></code></pre>
+
+<!-- ===================== 5 ===================== -->
+<h2 id="flow">⑤ 数据流:WBS 主数据如何被读写</h2>
+<div class="flow" style="flex-direction:column;align-items:flex-start;gap:10px">
+  <div><span class="node">控制面板页(你手动维护)</span> <span class="arrow">— POST /api/wbs/upsert·archive·delete →</span> <span class="node p0">wbsRegistry.js</span> <span class="arrow">⇄ 原子读写 ⇄</span> <span class="node">.runtime/wbs-registry.json</span></div>
+  <div><span class="node new">prepare 节点(Python,Phase 1)</span> <span class="arrow">— executor.query_wbs(wbs) →</span> <span class="node have">HttpNode</span> <span class="arrow">— POST /api/wbs/get →</span> <span class="node p0">wbsRegistry.js</span> <span class="arrow">→ {factory, costCenter, purchaser, stockLocation, offset...}</span></div>
+</div>
+<p class="mut" style="font-size:13px">写只发生在控制面板(人);读发生在编排层填单前(机)。Python 永远不直接碰那个 JSON 文件 —— 它只认 <code>query_wbs</code> 契约,这样换设备/换存储都不影响图。</p>
+
+<!-- ===================== 6 ===================== -->
+<h2 id="verify">⑥ 验证结果 <span class="pill ok">全绿</span></h2>
+<table>
+  <tr><th>检查</th><th>结果</th></tr>
+  <tr><td><code>npm run check</code>(全量 node --check,含 wbsRegistry.js)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>wbsRegistry CRUD 功能冒烟(list/upsert/合并/archive/delete/校验)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>真实 HTTP 端到端(起服务 curl /api/wbs/*,含分页/归档/删除/坏请求)</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>控制面板页渲染 WBS section</td><td><span class="pill ok">OK</span></td></tr>
+  <tr><td>orchestrator 离线套件:smoke · stage2 · stage3 · chat_demo · inventory · <b>wbs</b></td><td><span class="pill ok">6/6 PASS</span></td></tr>
+  <tr><td>Executor 契约符合(Mock + HttpNode 均含 query_wbs/inventory_query)</td><td><span class="pill ok">OK</span></td></tr>
+</table>
+
+<!-- ===================== 7 ===================== -->
+<h2 id="next">⑦ 下一步:Phase 1(获取 router)</h2>
+<div class="grid g2">
+  <div class="card"><h4 class="pill new">Phase 1 待建</h4>
+    <ul style="font-size:13px">
+      <li><code>parse_demand</code>:统一「需求」表 intake</li>
+      <li><code>route_workflow</code>:每物料分配(412&gt;89&gt;458)+ 按 WBS 分桶 → 分配计划</li>
+      <li><code>prepare</code>:逐草稿 <code>query_wbs</code> 补全 + 生成 458 附件(openpyxl)</li>
+      <li><code>execute_plan</code>:串行多草稿、首跑 dry-run、失败不挡其余</li>
+      <li><code>unit_check</code>(LLM 单位换算)+ <code>finalize</code> 多草稿汇总</li>
+      <li><code>tests/router.py</code>:全离线 mock 覆盖三向拆分 + WBS 分桶</li>
+    </ul>
+  </div>
+  <div class="card"><h4>为什么先做 Phase 0</h4>
+    <p style="font-size:13px" class="mut">route_workflow 选完流后,prepare 要靠 WBS 主数据把每张草稿的工厂/成本中心/采购人/库存地点补齐,并据此生成 458 附件。<b>没有这个数据底座,prepare 无据可查、458 附件生不出来。</b>所以先把 registry + query_wbs 建好、验透,Phase 1 才能顺。</p>
+  </div>
+</div>
+
+<p class="mut" style="margin-top:24px;font-size:12px">安全边界(贯穿):全程只存草稿、零提交/审批;WBS registry 是本地业务主数据,不含任何 SSO/cookie/token/密码/MFA;喂 LLM 的仍只有业务字段。本报告本地查看,可直接用浏览器打开。</p>
+
+</div>
+</body>
+</html>

@@ -8,7 +8,8 @@ import json
 from typing import Any, Dict
 
 from ..config import get_settings
-from ..state import STATUS_DONE, STATUS_FAILED, STATUS_RUNNING
+from ..state import (STATUS_DONE, STATUS_FAILED, STATUS_NEEDS_INPUT,
+                    STATUS_NEEDS_LOGIN, STATUS_RUNNING)
 from ._common import append_history
 
 
@@ -17,7 +18,14 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     result = state.get("result") or {}
     status = state.get("status", STATUS_RUNNING)
     if status == STATUS_RUNNING:
-        status = STATUS_DONE if result.get("ok") else STATUS_FAILED
+        # an upstream node may have stopped with a resumable signal without a
+        # diagnose pass (e.g. the acquire router); map it here.
+        if result.get("needsInput"):
+            status = STATUS_NEEDS_INPUT
+        elif result.get("needsLogin"):
+            status = STATUS_NEEDS_LOGIN
+        else:
+            status = STATUS_DONE if result.get("ok") else STATUS_FAILED
 
     thread = state.get("thread_id", "default")
     out_dir = settings.runtime_dir / thread
@@ -37,6 +45,9 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "graph_history": state.get("history", []),
         "playwright_actions": result.get("actions", []),
         "requestUrl": result.get("requestUrl"),
+        # acquire-mode router: per-draft fan-out audit
+        "plan_results": state.get("plan_results"),
+        "plan_notes": (state.get("plan") or {}).get("notes"),
     }
     audit_path = out_dir / "run.json"
     audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,10 +1,11 @@
 """The Executor contract the graph depends on (platform-neutral)."""
 from __future__ import annotations
 
-from typing import Any, Dict, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 from ..schemas import (ExecutionResult, FillRequest, InboundFillRequest,
-                       OutboundFillRequest, PurchaseFillRequest)
+                       InventoryQueryRequest, OutboundFillRequest,
+                       PurchaseFillRequest)
 
 
 class ExecutorError(RuntimeError):
@@ -24,6 +25,25 @@ class Executor(Protocol):
 
     def query_pdm(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         """Query PDM master-data material; return the Node response shape."""
+        ...
+
+    def inventory_query(self, request: InventoryQueryRequest) -> Dict[str, Any]:
+        """Query OA SAP inventory by material code (optionally narrowed by
+        factory/stock-location/WBS). Read-only; never fills or submits. Returns
+        the Node /api/oa/inventory-query response shape (organizedRows + search).
+        Feeds the Stage-3b route_workflow decision."""
+        ...
+
+    def query_wbs(self, wbs_code: str) -> Optional[Dict[str, Any]]:
+        """Look up a WBS code in the Node-owned WBS registry. Returns the record
+        dict (factory/cost center/purchaser/stock location/…) or None if unknown.
+        The prepare node uses this to auto-fill each draft's bound fields."""
+        ...
+
+    def resolve_wbs(self, query: str) -> Dict[str, Any]:
+        """Resolve a free-text/alias/code reference to a WBS. Returns
+        {matched: record|None, matchType, candidates: [...]}. The resolve_wbs node
+        uses this so users can fill the WBS field (or instruct) with a nickname."""
         ...
 
     def fill_stock_transfer(self, request: FillRequest) -> ExecutionResult:

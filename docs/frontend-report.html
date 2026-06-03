@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>测试前端报告 · 双栏工作区(deep-chat + BFF 网关)</title>
+<style>
+  :root{
+    --bg:#0f1320; --panel:#171c2e; --panel2:#1d2438; --ink:#e6e9f2; --mut:#9aa4bf;
+    --line:#2a3350; --acc:#6ea8fe; --ok:#34d399; --warn:#fbbf24; --new:#f472b6; --code:#0b0e18;
+    --f412:#6ea8fe; --f89:#f472b6; --f458:#fbbf24; --f414:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",system-ui,Arial,sans-serif;line-height:1.6}
+  a{color:var(--acc)}
+  header{padding:30px 36px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,#141a2e,#0f1320)}
+  header h1{margin:0;font-size:25px}header p{margin:8px 0 0;color:var(--mut);max-width:960px}
+  .wrap{max-width:1160px;margin:0 auto;padding:26px 24px 80px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:18px 0 8px;color:#cdd5ee}
+  p{margin:8px 0}.mut{color:var(--mut)}
+  .grid{display:grid;gap:14px}.g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h4{margin:0 0 6px;font-size:14px}
+  .pill{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:3px 9px;white-space:nowrap}
+  .pill.ok{background:rgba(52,211,153,.16);color:var(--ok)}
+  .pill.new{background:rgba(244,114,182,.16);color:var(--new)}
+  .pill.have{background:rgba(110,168,254,.16);color:var(--acc)}
+  code{font-family:"JetBrains Mono",Consolas,"Courier New",monospace;font-size:12.5px}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:10px 0;font-size:12.5px;line-height:1.55}
+  pre code{color:#d7dcf0}
+  .k{color:#c792ea}.s{color:#c3e88d}.c{color:#637299;font-style:italic}.f{color:#82aaff}.n{color:#f78c6c}
+  .note{border-left:3px solid var(--acc);background:var(--panel2);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+  .note b{color:#fff}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd5ee}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+  .node{border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:12.5px;background:var(--panel2);white-space:nowrap}
+  .node.new{border-color:rgba(244,114,182,.6);background:rgba(244,114,182,.10)}
+  .node.have{border-color:rgba(110,168,254,.45)}
+  .arrow{color:var(--mut)}
+  ul{margin:8px 0;padding-left:22px}li{margin:4px 0}
+  .toc{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 0}
+  .toc a{font-size:13px;text-decoration:none;border:1px solid var(--line);padding:5px 10px;border-radius:7px}
+  .mock{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:12px 0;font-size:12px}
+  .mock .mtop{display:flex;justify-content:space-between;background:var(--panel2);padding:8px 12px;color:var(--mut)}
+  .mock .mbody{display:grid;grid-template-columns:1fr 1fr;min-height:150px}
+  .mock .mcol{padding:12px;border-right:1px solid var(--line)}
+  .mock .mcol:last-child{border-right:none}
+  .mock .bubble{background:#222a42;border-radius:8px;padding:6px 9px;margin:4px 0}
+  .mock .bubble.user{background:#2b3a66;margin-left:30px}
+  .mock .chip{display:inline-block;background:#2a3350;border-radius:999px;padding:1px 7px;margin:2px;font-size:10px}
+  .mock .dc{border-left:3px solid var(--f412);background:#1a2030;border-radius:6px;padding:5px 8px;margin:4px 0}
+  .mock .dc.b{border-left-color:var(--f458)}
+  .mock .frow{display:flex;gap:4px;margin:3px 0}.mock .frow span{flex:1;background:#222a42;border-radius:4px;padding:3px 5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>测试前端报告 · 双栏工作区(deep-chat 对话 + BFF 网关)</h1>
+  <p>一个<b>与后端代码完全解耦</b>的测试台:后端只出 HTTP 接口,前端只通过接口互动(未来别的 Agent 平台接同一套契约即可)。以<b>对话为核心(左)+ 填表为核心(右)</b>的双栏工作区,配置(初始化/用户设置/WBS)收进抽屉。<b>已在真实浏览器里端到端跑通验证。</b></p>
+  <div class="toc">
+    <a href="#arch">① 架构</a><a href="#ui">② 界面形态</a><a href="#deepchat">③ deep-chat 选型</a>
+    <a href="#bff">④ BFF 接口</a><a href="#run">⑤ 怎么跑</a><a href="#verify">⑥ 验证</a><a href="#next">⑦ 说明</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- 1 -->
+<h2 id="arch">① 架构:前端只连一个 API 面</h2>
+<div class="flow">
+  <span class="node new">frontend/ (Vue3 壳 + deep-chat)<br><span class="mut" style="font-size:11px">独立静态托管 · 纯 fetch/SSE</span></span>
+  <span class="arrow">──只连──▶</span>
+  <span class="node new">BFF · FastAPI :8788</span>
+</div>
+<div class="flow">
+  <span class="arrow" style="margin-left:40px">BFF ├─ 代理 →</span> <span class="node have">Node :8787(会话/登录/SSO/WBS/resolve)</span>
+</div>
+<div class="flow">
+  <span class="arrow" style="margin-left:40px">&nbsp;&nbsp;&nbsp;&nbsp;├─</span> <span class="node have">/api/profile(画像)</span>
+  <span class="arrow">└─ /api/chat(SSE) →</span> <span class="node have">run_workflow(mode=acquire) · executor=mock|http-node</span>
+</div>
+<div class="note"><b>解耦点:</b>前端从不 import 后端、从不直连 Node,只认 BFF 这一份 HTTP 契约;FastAPI 自带 <code>/docs</code> OpenAPI 给别的 Agent 平台现成可读契约。前端壳用 Vue3(CDN 免构建),对话区用 <b>deep-chat</b>(MIT 开源 Web Component)。</div>
+
+<!-- 2 -->
+<h2 id="ui">② 界面形态:双栏 + 配置抽屉</h2>
+<div class="mock">
+  <div class="mtop"><span>⚙︎ OA 采购助手 · 库存驱动 · 永不提交</span><span>离线mock | 真机 · 在线 · 配置</span></div>
+  <div class="mbody">
+    <div class="mcol">
+      <div class="mut">左半 · 对话(deep-chat)</div>
+      <div class="bubble">🤖 你好,填好右侧需求行点「发起申请」…</div>
+      <div class="bubble user">采购申请(2 行,dry-run) 🧑</div>
+      <div class="bubble">运行轨迹 <span class="chip">读取需求</span><span class="chip">解析WBS别称</span><span class="chip">查库存</span><span class="chip">分配路由</span>…
+        <div style="margin-top:4px"><b style="color:var(--ok)">完成 · 草稿 2 张</b></div>
+        <div class="dc"><b>412 出库</b> · WBS C2-0225002.06.01 · ✓已填(dry-run)</div>
+        <div class="dc b"><b>458 采购</b> · 缺口×3 · ✓已填(dry-run)</div>
+      </div>
+    </div>
+    <div class="mcol">
+      <div class="mut">右半 · 采购需求(填表)</div>
+      <div class="frow"><span>物料编码</span><span>数量</span><span>WBS/别称</span><span>工厂</span></div>
+      <div class="frow"><span>4000023659</span><span>10</span><span>传感器项目</span><span>1010</span></div>
+      <div class="frow"><span>4000059295</span><span>5</span><span>传感器项目</span><span>1010</span></div>
+      <div style="margin-top:8px"><span class="chip">+ 加一行</span> <span class="chip">□ 保存草稿</span> <span class="chip" style="background:var(--acc);color:#06122e">发起申请 ▸</span></div>
+    </div>
+  </div>
+</div>
+<ul>
+  <li><b>左半 = 对话核心</b>:deep-chat 渲染助手开场白 → 用户请求气泡 → 一个<b>实时生长</b>的助手气泡(运行轨迹 chips → 完成 · 彩色草稿卡:412 蓝 / 89 粉 / 458 橙 / 414 绿)。</li>
+  <li><b>右半 = 填表核心</b>:采购需求行表格(物料/数量/单位/WBS·别称/工厂)+ 一句话说明 + dry-run/保存 + 「发起申请」。</li>
+  <li><b>配置抽屉</b>(默认隐藏,点「配置」从右滑出):<b>初始化 / 用户设置 / WBS 管理</b> 三个 tab —— 即原 step1-3,收成不常显示的配置页。</li>
+  <li>顶栏:品牌 · <b>离线mock / 真机</b> 切换 · 在线徽章 · 配置按钮。</li>
+</ul>
+
+<!-- 3 -->
+<h2 id="deepchat">③ deep-chat 选型 & 集成</h2>
+<p class="mut" style="font-size:13px">按「先找可直接用的开源框架」原则选了 <b>deep-chat</b>(MIT,<code>cdn.jsdelivr.net/npm/deep-chat@2</code>,框架无关 Web Component,CDN 免构建)。它给了 polished 的对话外壳(头像/气泡/输入框/自动滚动/流式),正好去掉「程序式」感。</p>
+<pre><code><span class="c">// 自定义元素 upgrade 后再配置;handler 跑我们自己的 BFF SSE,</span>
+<span class="c">// 用 onResponse({html, overwrite:true}) 把进度 chips + 草稿卡渲染进同一个生长气泡</span>
+customElements.<span class="f">whenDefined</span>(<span class="s">'deep-chat'</span>).<span class="f">then</span>(() => {
+  dc.connect = { stream: <span class="k">true</span>, handler: (body, signals) => <span class="f">chatHandler</span>(body, signals) };
+  dc.history = [{ role: <span class="s">'ai'</span>, html: intro }];
+});
+<span class="c">// chatHandler: fetch BFF /api/chat 流 → 逐 data: 事件 → signals.onResponse({html, overwrite})</span></code></pre>
+<div class="note"><b>一个关键约束:</b>deep-chat 的 html 消息渲染在它的 <b>shadow DOM</b> 里,页面全局 CSS 进不去,所以草稿卡用<b>内联样式</b>(每个卡片自带 style)而非 class。右半填表 + 配置抽屉仍由 Vue 管理。</div>
+
+<!-- 4 -->
+<h2 id="bff">④ BFF 接口(<code>orchestrator/oa_orchestrator/bff.py</code>)</h2>
+<table>
+  <tr><th>接口</th><th>作用</th><th>实现</th></tr>
+  <tr><td><code>GET /api/health</code> · <code>GET /api/session/status</code></td><td>探活 / 会话状态</td><td>本地 / 代理 Node</td></tr>
+  <tr><td><code>POST /api/session/login/{oa,pdm}/{start,test-live}</code> · <code>/api/sso/open</code></td><td>登录/检测/SSO</td><td>代理 Node</td></tr>
+  <tr><td><code>GET /api/wbs/list</code> · <code>POST /api/wbs/{upsert,archive,delete,resolve}</code></td><td>WBS CRUD + 别称解析</td><td>代理 Node</td></tr>
+  <tr><td><code>GET /api/profile/:user</code> · <code>POST /api/profile</code></td><td>用户画像存取</td><td>store.py</td></tr>
+  <tr><td><code>POST /api/chat</code>(SSE)</td><td>acquire 路由,流式</td><td>run_workflow</td></tr>
+</table>
+<p class="mut" style="font-size:13px"><b>executor 开关</b>:<code>mock</code> 薄包装(假 OA/PDM/库存,但 <code>query_wbs</code> 取真实 Node registry);<code>http-node</code> 全真机。<b>采购输入</b>:前端表格 demandRows → BFF 拼成 BusinessInput 存进 store → intake 跳过 Excel 解析。<b>WBS 别称</b>:需求行 WBS 列可写别称,图内 <code>resolve_wbs</code> 节点经 <code>/api/wbs/resolve</code> 解析成真实编码。</p>
+
+<!-- 5 -->
+<h2 id="run">⑤ 怎么跑(三个独立进程)</h2>
+<pre><code><span class="c"># 1) Node「手」(WBS registry / 真机填单;离线也建议起,供真实 WBS)</span>
+MEGANT_EDGE_PROFILE_MODE=sso-handoff npm start                      <span class="c"># :8787</span>
+
+<span class="c"># 2) BFF 网关(需 orchestrator/.env 的 DEEPSEEK_API_KEY —— LLM 必需)</span>
+PYTHONPATH=orchestrator orchestrator/.venv/bin/uvicorn oa_orchestrator.bff:app --port 8788
+
+<span class="c"># 3) 前端(任意静态服务器,真·解耦)</span>
+cd frontend &amp;&amp; python3 -m http.server 5500       <span class="c"># 打开 http://127.0.0.1:5500</span></code></pre>
+<div class="note"><b>LLM 必需:</b>聊天的 classify_goal 一定调 DeepSeek(无 fallback),mock 模式只是把 OA/PDM/库存换成假后端,LLM 仍是真的。</div>
+
+<!-- 6 -->
+<h2 id="verify">⑥ 验证 <span class="pill ok">浏览器端到端跑通</span></h2>
+<table>
+  <tr><th>检查</th><th>结果</th></tr>
+  <tr><td><b>双栏渲染</b>:deep-chat 对话(左,头像/气泡/输入框)+ 采购需求表(右)+ 顶栏切换</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td><b>配置抽屉</b>:点「配置」滑出,初始化/用户设置/WBS 管理三 tab(原 step1-3)</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td><b>流式对话</b>(真 DeepSeek + mock 后端):运行轨迹 chips 实时生长(读取需求→解析WBS别称→…→汇总)</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td><b>草稿卡 + 别称</b>:WBS 写别称「传感器项目」→ 解析为 C2-0225002.06.01;出 412(×10+×2)+ 458(缺口×3)彩色卡 · dry-run</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>BFF 离线 <code>tests/bff.py</code> · npm check · orchestrator 8/8 套件</td><td><span class="pill ok">全绿</span></td></tr>
+</table>
+
+<!-- 7 -->
+<h2 id="next">⑦ 说明 & 可扩展点</h2>
+<div class="grid g2">
+  <div class="card"><h4>已达成</h4>
+    <ul style="font-size:13px">
+      <li>对话为核心(左)+ 填表为核心(右)的双栏工作区</li>
+      <li>配置(初始化/用户设置/WBS)收进抽屉,不再「程序式」</li>
+      <li>deep-chat 开源框架直接用,流式 + 草稿卡 + 别称解析</li>
+      <li>真·前后端分离:前端独立托管,只认 BFF 契约</li>
+    </ul>
+  </div>
+  <div class="card"><h4>后续可加(按需)</h4>
+    <ul style="font-size:13px">
+      <li>needs_input 的「就地修正再续跑」(目前提示 + 重新发起)</li>
+      <li>把整句自然语言指令(含物料/数量)交 LLM 抽取,自动填需求行</li>
+      <li>归还(414)入口 · 鉴权/多用户 · 画像默认值接进路由预填</li>
+    </ul>
+  </div>
+</div>
+<p class="mut" style="margin-top:24px;font-size:12px">安全边界:BFF 只代理 + 编排,绝不碰 cookie/token;全程只存草稿、零提交;前端纯消费接口。报告本地查看,浏览器直接打开。</p>
+
+</div>
+</body>
+</html>

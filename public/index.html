@@ -68,6 +68,55 @@
         </div>
         <pre id="pdmLoginOutput" class="output compact"></pre>
       </section>
+
+      <section class="panel wbsPanel">
+        <div class="panelTitle">
+          <h2>WBS 主数据</h2>
+          <span id="wbsBadge" class="badge neutral">未加载</span>
+        </div>
+        <p>每个 WBS 编码绑定工厂 / 成本中心 / 采购人 / MRP / 默认库存地点等信息;编排层在填单前按 WBS 自动补全这些字段。仅本地业务主数据,不含任何登录凭据。</p>
+
+        <form id="wbsForm" class="wbsForm" autocomplete="off">
+          <div class="wbsGrid">
+            <label>WBS编码*<input name="wbsCode" required placeholder="C2-0225002.06.01" /></label>
+            <label>项目定义<input name="projectDefinition" placeholder="C2-0225002" /></label>
+            <label>需求工厂代码<input name="demandFactoryCode" placeholder="1010" /></label>
+            <label>成本中心<input name="costCenter" /></label>
+            <label>采购人(申请人 工号-姓名)<input name="purchaser" placeholder="ZN092-张三" /></label>
+            <label>MRP控制者<input name="mrpController" /></label>
+            <label>默认库存地点名称<input name="stockLocationName" placeholder="实验室仓" /></label>
+            <label>默认库存地点SAP码<input name="stockLocationSapCode" placeholder="H001" /></label>
+            <label>需求日期偏移(天)<input name="demandDateOffsetDays" type="number" min="0" placeholder="5" /></label>
+            <label class="wbsWide">送货地址<input name="deliveryAddress" /></label>
+            <label>状态
+              <select name="status">
+                <option value="active">active</option>
+                <option value="archived">archived</option>
+              </select>
+            </label>
+            <label class="wbsWide">备注<input name="remark" /></label>
+          </div>
+          <div class="buttonRow">
+            <button id="wbsSave" type="submit">保存 / 更新</button>
+            <button id="wbsReset" type="button" class="secondaryButton">清空表单</button>
+            <label class="wbsToggle"><input id="wbsShowArchived" type="checkbox" /> 显示已归档</label>
+            <button id="wbsRefresh" type="button" class="secondaryButton">刷新列表</button>
+          </div>
+        </form>
+
+        <div class="wbsTableWrap">
+          <table id="wbsTable" class="wbsTable">
+            <thead>
+              <tr>
+                <th>WBS编码</th><th>项目定义</th><th>工厂</th><th>成本中心</th><th>采购人</th>
+                <th>MRP</th><th>库存地点</th><th>偏移</th><th>状态</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="wbsTableBody"></tbody>
+          </table>
+        </div>
+        <pre id="wbsOutput" class="output compact"></pre>
+      </section>
     </main>
 
     <script type="module" src="/app.js"></script>

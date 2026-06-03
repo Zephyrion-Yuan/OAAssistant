@@ -177,9 +177,102 @@ dd {
   max-width: 100%;
 }
 
+.wbsPanel {
+  grid-column: 1 / -1;
+}
+
+.wbsGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 12px 0;
+}
+
+.wbsGrid label {
+  color: #667085;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  gap: 4px;
+}
+
+.wbsGrid .wbsWide {
+  grid-column: 1 / -1;
+}
+
+.wbsGrid input,
+.wbsGrid select {
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  color: #172033;
+  font: inherit;
+  min-height: 34px;
+  padding: 0 8px;
+}
+
+.wbsToggle {
+  align-items: center;
+  color: #475467;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.wbsTableWrap {
+  margin-top: 12px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.wbsTable {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+}
+
+.wbsTable th,
+.wbsTable td {
+  border-bottom: 1px solid #e3e8f0;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.wbsTable th {
+  background: #f8fafc;
+  color: #475467;
+  font-weight: 650;
+  position: sticky;
+  top: 0;
+}
+
+.wbsTable tr.archived td {
+  color: #98a2b3;
+}
+
+.wbsTable .rowActions {
+  display: flex;
+  gap: 6px;
+}
+
+.wbsTable .linkBtn {
+  background: none;
+  border: none;
+  color: #1d4ed8;
+  cursor: pointer;
+  font: inherit;
+  min-height: auto;
+  padding: 2px 4px;
+}
+
+.wbsTable .linkBtn.danger {
+  color: #b42318;
+}
+
 @media (max-width: 900px) {
   .layout,
-  .statusGrid {
+  .statusGrid,
+  .wbsGrid {
     grid-template-columns: 1fr;
   }
 

@@ -45,6 +45,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="force dry-run (fill only, never save)")
     parser.add_argument("--interactive", action="store_true", help="prompt for missing slots (ask loop)")
     parser.add_argument("--user", help="user id for personalization profile")
+    parser.add_argument("--mode", choices=["single", "acquire"], default="single",
+                        help="single = one workflow (default); acquire = inventory-driven WBS-fan-out router")
     parser.add_argument("--executor", help="override EXECUTOR: http-node | mock")
     args = parser.parse_args()
 
@@ -53,16 +55,16 @@ def main() -> None:
     if args.resume and not args.thread:
         parser.error("--resume requires --thread")
 
-    settings, executor, graph = build_runtime()
+    settings, executor, graph = build_runtime(mode=args.mode)
     common = dict(graph=graph, executor=executor, settings=settings,
-                  interactive=args.interactive, on_update=_printer)
+                  interactive=args.interactive, on_update=_printer, mode=args.mode)
     save = bool(args.save) and not args.dry_run
 
     if args.resume:
-        print(f"[resume] thread={args.thread} executor={executor.name}")
+        print(f"[resume] thread={args.thread} executor={executor.name} mode={args.mode}")
         res = run_workflow(thread_id=args.thread, **common)
     else:
-        print(f"[start] executor={executor.name} save={save} interactive={args.interactive}")
+        print(f"[start] executor={executor.name} mode={args.mode} save={save} interactive={args.interactive}")
         res = run_workflow(request=args.request, excel_path=args.excel, thread_id=args.thread,
                            save=save, user_id=args.user, **common)
 

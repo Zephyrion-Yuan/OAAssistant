@@ -82,6 +82,9 @@ PDM：
 
 主要文档：
 
+- **[系统架构与进度](docs/ARCHITECTURE.md)** ⭐ 先看这个:三层架构、图拓扑、关键文件、进度、debug 锦囊
+- **[测试全流程(mock + 真机)](docs/TESTING_GUIDE.md)** ⭐ step-by-step
+- [前端测试台报告](docs/frontend-report.html)
 - [开发日志](docs/DEVELOPMENT_LOG.md)
 - [探索结果总览](docs/EXPLORATION_RESULTS.md)
 - [页面探索框架](docs/PAGE_EXPLORATION_FRAMEWORK.md)

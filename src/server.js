@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { edgeSession } from './browser/edgeSession.js';
 import { cachedProfileSession } from './browser/cachedProfileSession.js';
 import { openLoginPage, scanOaPage, fillOaPage } from './automation/oaAutomation.js';
+import { queryOaInventory } from './automation/oaInventoryQuery.js';
+import { listWbs, getWbs, upsertWbs, archiveWbs, deleteWbs, resolveWbs } from './automation/wbsRegistry.js';
 import { queryPdmMaterial } from './automation/pdmAutomation.js';
 import { runStockTransfer, NeedInputError } from './automation/flows/stockTransfer.js';
 import { runOutbound, NeedInputError as OutboundNeedInputError } from './automation/flows/outbound.js';
@@ -315,6 +317,41 @@ async function handlePurchase(rawBody) {
   });
 }
 
+// ----- WBS registry (user-managed business master data) ----------------------
+const wbsUpsertSchema = z.object({
+  wbsCode: z.string().min(1),
+  alias: z.string().optional(),
+  projectDefinition: z.string().optional(),
+  demandFactoryCode: z.string().optional(),
+  costCenter: z.string().optional(),
+  purchaser: z.string().optional(),
+  mrpController: z.string().optional(),
+  stockLocationName: z.string().optional(),
+  stockLocationSapCode: z.string().optional(),
+  deliveryAddress: z.string().optional(),
+  demandDateOffsetDays: z.union([z.string(), z.number()]).nullish(),
+  remark: z.string().optional(),
+  status: z.enum(['active', 'archived']).optional()
+}).passthrough();
+
+const wbsKeySchema = z.object({ wbsCode: z.string().min(1) }).passthrough();
+
+function handleWbsUpsert(rawBody) {
+  const parsed = wbsUpsertSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return { ok: false, error: 'Invalid /api/wbs/upsert request body.', issues: parsed.error.issues };
+  }
+  return upsertWbs(parsed.data);
+}
+
+function handleWbsKey(rawBody, fn, label) {
+  const parsed = wbsKeySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return { ok: false, error: `Invalid ${label} request body.`, issues: parsed.error.issues };
+  }
+  return fn(parsed.data);
+}
+
 async function handleApi(request, response, url) {
   if (request.method === 'OPTIONS') {
     sendJson(response, 200, {});
@@ -338,6 +375,11 @@ async function handleApi(request, response, url) {
   }
   if (request.method === 'GET' && url.pathname === '/api/profile/status') {
     sendJson(response, 200, profileCacheStatus());
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/wbs/list') {
+    const includeArchived = ['1', 'true', 'yes'].includes((url.searchParams.get('includeArchived') || '').toLowerCase());
+    sendJson(response, 200, listWbs({ includeArchived }));
     return;
   }
 
@@ -381,6 +423,10 @@ async function handleApi(request, response, url) {
     sendJson(response, 200, await fillOaPage(body));
     return;
   }
+  if (url.pathname === '/api/oa/inventory-query') {
+    sendJson(response, 200, await queryOaInventory(body));
+    return;
+  }
   if (url.pathname === '/api/oa/stock-transfer') {
     sendJson(response, 200, await handleStockTransfer(body));
     return;
@@ -399,6 +445,26 @@ async function handleApi(request, response, url) {
   }
   if (url.pathname === '/api/pdm/query') {
     sendJson(response, 200, await queryPdmMaterial(body));
+    return;
+  }
+  if (url.pathname === '/api/wbs/get') {
+    sendJson(response, 200, handleWbsKey(body, getWbs, '/api/wbs/get'));
+    return;
+  }
+  if (url.pathname === '/api/wbs/upsert') {
+    sendJson(response, 200, handleWbsUpsert(body));
+    return;
+  }
+  if (url.pathname === '/api/wbs/archive') {
+    sendJson(response, 200, handleWbsKey(body, archiveWbs, '/api/wbs/archive'));
+    return;
+  }
+  if (url.pathname === '/api/wbs/delete') {
+    sendJson(response, 200, handleWbsKey(body, deleteWbs, '/api/wbs/delete'));
+    return;
+  }
+  if (url.pathname === '/api/wbs/resolve') {
+    sendJson(response, 200, resolveWbs(body));
     return;
   }
   if (url.pathname === '/api/pdm/login-diagnose') {

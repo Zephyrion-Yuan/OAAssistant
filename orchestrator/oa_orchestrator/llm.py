@@ -38,9 +38,25 @@ from .config import Settings
 
 T = TypeVar("T", bound=BaseModel)
 
+# Test seam: when set, extract_structured routes to this responder instead of the
+# real DeepSeek call. Lets offline tests exercise the LLM-mandatory nodes
+# (classify_goal / unit_check) deterministically without a key or network.
+# Signature: (schema, system, user) -> BaseModel | None.
+_TEST_RESPONDER = None
+
+
+def set_test_responder(fn) -> None:
+    global _TEST_RESPONDER
+    _TEST_RESPONDER = fn
+
+
+def clear_test_responder() -> None:
+    global _TEST_RESPONDER
+    _TEST_RESPONDER = None
+
 
 def llm_available(settings: Settings) -> bool:
-    return bool(settings.deepseek_api_key)
+    return _TEST_RESPONDER is not None or bool(settings.deepseek_api_key)
 
 
 def get_chat_model(settings: Settings):
@@ -121,6 +137,8 @@ def extract_structured(settings: Settings, schema: Type[T], system: str, user: s
     object via a plain invoke and parse it ourselves.
     Strategy 2 (fallback): with_structured_output(function_calling).
     """
+    if _TEST_RESPONDER is not None:
+        return _TEST_RESPONDER(schema, system, user)
     if not llm_available(settings):
         return None
     try:
@@ -155,3 +173,17 @@ def extract_structured(settings: Settings, schema: Type[T], system: str, user: s
         return result
     except Exception:  # noqa: BLE001 — heuristic fallback on any LLM failure
         return None
+
+
+def require_structured(settings: Settings, schema: Type[T], system: str, user: str) -> T:
+    """Like extract_structured but for LLM-mandatory nodes: the understanding
+    layer is a required dependency (a DeepSeek key must be configured, same as
+    LangGraph expects its model config), so there is no heuristic fallback —
+    a missing result is a configuration error, not a silent degrade."""
+    result = extract_structured(settings, schema, system, user)
+    if result is None:
+        raise RuntimeError(
+            "LLM understanding is required here but returned no result — set DEEPSEEK_API_KEY "
+            "(or register a test responder). This node has no heuristic fallback by design."
+        )
+    return result

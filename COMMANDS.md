@@ -223,9 +223,15 @@ orchestrator/.venv/bin/python orchestrator/tests/chat_demo.py # 对话前端
 PYTHONPATH=orchestrator orchestrator/.venv/bin/python -m oa_orchestrator.run \
   --executor mock --excel <xlsx> --request "从设备零件仓 D002 转到成品仓 A001" --save
 
-# 对话式前端 / HTTP 前端（同一个 run_workflow 入口）
+# CLI 对话式前端(终端 REPL)
 PYTHONPATH=orchestrator orchestrator/.venv/bin/python -m oa_orchestrator.chat
-PYTHONPATH=orchestrator orchestrator/.venv/bin/python -m oa_orchestrator.serve   # POST /chat
+
+# BFF 网关(前端/其它 Agent 平台连这一个;FastAPI,代理 Node + 画像 + SSE 聊天)
+PYTHONPATH=orchestrator orchestrator/.venv/bin/uvicorn oa_orchestrator.bff:app --port 8788
 ```
 
-CLI 参数：`--request --excel --thread --resume --save --dry-run --interactive --executor`。缺必填槽时：交互模式追问，无人值守进 `needs_input` 可恢复终态（`--resume --thread <id>` 续跑）。
+> 旧的极简 `oa_orchestrator.serve`(只有 POST /chat)已被 `bff.py` 取代,归档在 `orchestrator/archive/serve.py`。
+
+CLI 参数：`--request --excel --thread --resume --save --dry-run --interactive --executor --mode`。`--mode acquire` 走库存驱动 WBS-fan-out router；缺必填槽时：交互模式追问,无人值守进 `needs_input` 可恢复终态（`--resume --thread <id>` 续跑）。
+
+完整测试步骤(mock + 真机)见 [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md);系统架构与进度见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
