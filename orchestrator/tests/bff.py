@@ -19,9 +19,36 @@ os.environ["DEEPSEEK_API_KEY"] = ""  # offline gate (LLM stubbed below)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import re  # noqa: E402
+
 from oa_orchestrator.llm import set_test_responder  # noqa: E402
+from oa_orchestrator.nodes.apply_corrections import (CorrectionPatch,  # noqa: E402
+                                                     MaterialEdit, WbsEdit)
 from oa_orchestrator.nodes.classify_goal import GoalClassification  # noqa: E402
 from oa_orchestrator.nodes.unit_check import UnitJudgment  # noqa: E402
+
+
+def _emulate_correction(user: str) -> CorrectionPatch:
+    """Stand in for the DeepSeek CorrectionPatch extraction in offline tests:
+    emulate what the model would return for the phrasings the tests send."""
+    text = user.split("用户回复:")[-1].strip()
+    pair = re.search(r"(\d{8,12})\s*(?:改成|换成|替换为|->)\s*(\d{8,12})", text)
+    if pair:
+        return CorrectionPatch(actionable=True,
+                               materialEdits=[MaterialEdit(materialCode=pair.group(1),
+                                                           newMaterialCode=pair.group(2))])
+    qty = re.search(r"改成\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z一-鿿]{1,8})?", text)
+    if qty:
+        code = re.search(r"(\d{8,12})", text)
+        return CorrectionPatch(actionable=True, materialEdits=[MaterialEdit(
+            materialCode=code.group(1) if code else "",
+            quantity=qty.group(1), unit=(qty.group(2) or "").strip())])
+    if re.search(r"按.*建议|采用建议|使用建议|确认|同意", text):
+        return CorrectionPatch(actionable=True, materialEdits=[MaterialEdit(useSuggestion=True)])
+    cc = re.search(r"成本中心\s*([A-Za-z0-9_.-]+)", text)
+    if cc:
+        return CorrectionPatch(actionable=True, wbsEdits=[WbsEdit(costCenter=cc.group(1))])
+    return CorrectionPatch(actionable=False)
 
 
 def _stub(schema, system, user):
@@ -29,6 +56,8 @@ def _stub(schema, system, user):
         return GoalClassification(goal="acquire")
     if schema is UnitJudgment:
         return UnitJudgment(consistent=False, reason="stub")
+    if schema is CorrectionPatch:
+        return _emulate_correction(user)
     return None
 
 

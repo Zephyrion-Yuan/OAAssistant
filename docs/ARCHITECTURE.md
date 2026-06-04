@@ -113,12 +113,18 @@ intake → preflight → understand → personalize → check_slot →(missing? 
 
 **acquire 模式(主力,库存驱动 WBS-fan-out router;`run_workflow(mode="acquire")`)**:
 ```
-intake(parse_demand) → preflight → resolve_wbs → classify_goal → pdm_enrich → unit_check
+START → apply_corrections → intake(parse_demand) → preflight → resolve_wbs → classify_goal
+   → pdm_enrich → unit_check
    ├─[goal=acquire]→ inventory_query → route_workflow(412/89/458)
    └─[goal=return ]───────────────────→ route_workflow(414, 按WBS)
-   ⇒ prepare → execute_plan → finalize
+   ⇒ prepare → execute_plan ─(ok)→ finalize
+任一上游「阻塞结果」(物料码错 / 单位需审核 / 未登录 / 缺字段 / 硬错)─► assist ─►
+   · 瞬时错 → 有界自动重试(回 prepare→execute_plan;saved_buckets 幂等不重复存草稿)
+   · info/action → finalize(needs_input + 引导话术,可恢复)
+   · 残差/结构漂移 → finalize(FAILED 人工转交)
 ```
-任一上游「阻塞结果」(物料码错 / 单位需审核 / 未登录 / 无草稿)短路到 finalize(可恢复终态)。
+- **`apply_corrections`(对话节点,START 后第一站)**:`needs_input` 后用户的下一句话当成**原位修正**而非新需求 —— LLM 抽 `CorrectionPatch`(物料码/数量/单位/成本中心/库存地点/WBS 替换 + `userReportsActionDone`),喂确定性 appliers;改完清下游、从 intake 重跑。识别不出 → 原地追问。`resumeMode=action/mixed` 且用户回「已处理/已登录」→ 不改数据、重跑**重新校验**(信任+复核)。
+- **`assist`(分诊+引导节点,阻塞统一入口)**:确定性先筛(login/transient/已结构化 needs_input),LLM 只啃残差并**撰写面向用户的引导话术**(把「可自行处理」与「需人工」分开);LLM 永不改动作/重试预算(沿用 single-mode diagnose 安全立场)。checkpoint 里的 `diagnosis`+`pending_input` 即「临时 cache」。
 
 ### 4.2 节点清单(`nodes/`)
 
@@ -133,7 +139,9 @@ intake(parse_demand) → preflight → resolve_wbs → classify_goal → pdm_enr
 | `inventory_query` | 逐物料查库存 + `classify_inventory` 算路由信号(公共/项目/无) | 否 |
 | `route_workflow` | **分配算法**:每物料 412>89>458 + 共享池跨行扣减;按 (流, WBS) 分桶(89 另按源 WBS);return 走 (414, WBS) | 否 |
 | `prepare` | 逐草稿 `query_wbs` 补全 + **生成 458 附件**(openpyxl,真实 22 列);缺关键字段→skip+note | 否 |
-| `execute_plan` | 串行逐草稿调 executor 填单;某张失败/缺输入不挡其余;汇总 | 否 |
+| `execute_plan` | 串行逐草稿调 executor 填单;某张失败/缺输入不挡其余;汇总。**save 模式按 bucket key 复用已保存草稿**(纠错重跑不重复存) | 否 |
+| `apply_corrections` | `needs_input` 后把用户回复当原位修正:LLM 抽 `CorrectionPatch` → 确定性 appliers;或「已处理」→ 重跑重校验 | **是(必需)** |
+| `assist` | 阻塞分诊:确定性先筛 + LLM 写引导话术(可自行处理 vs 需人工);transient 自动重试、info/action 引导停、残差转人工 | LLM 仅润色引导(可无 key 兜底) |
 | `finalize` | 写 `.runtime/orchestrator/<thread>/run.json`(两级审计 + 多草稿) | 否 |
 | (single) `understand/check_slot/ask/resolve_params/execute/verify/diagnose/personalize` | 单流程模式专用 | understand/diagnose 用 LLM(有启发式兜底) |
 

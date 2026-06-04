@@ -37,3 +37,6 @@ npm-debug.log*
 
 # --- personal onboarding doc (local paths + personal usage stats) ---
 ONBOARDING.md
+
+# AI-editor annotated copies (junk, never import)
+*.aide.py

@@ -38,14 +38,16 @@ npm run check
 
 # 编排层离线套件(逐个跑,各 <1s)
 cd orchestrator
-for t in smoke stage2 stage3 chat_demo inventory wbs router bff; do
+for t in smoke stage2 stage3 chat_demo inventory wbs router idempotency assist bff; do
   .venv/bin/python tests/$t.py && echo "  ↑ $t PASS" || echo "  ↑ $t FAIL"
 done
 ```
 
-**期望**:`npm run check` 无输出即通过;8 个测试都打印 `ALL … PASSED`。
+**期望**:`npm run check` 无输出即通过;10 个测试都打印 `ALL … PASSED`。
 - `router.py` 覆盖:三流 fan-out(412/89/458)、22 列 458 附件、WBS 分桶、缺口 note、PDM 拦截、缺 registry 跳过、归还 414、单位误用、**别称解析**。
-- `bff.py` 覆盖:health、画像往返、chat SSE 出草稿、needs_input。
+- `idempotency.py` 覆盖:save 模式纠错重跑**不重复保存**已成功的草稿桶(按内容稳定 bucket key 复用)、内容变更使复用失效、dry-run 永不复用。
+- `assist.py` 覆盖:登录/wbsAutofill→**操作引导**、结构化 needs_input 保留 kind/items、残差硬错→人工转交、瞬时错→有界自动重试、用户回复「已处理」→清状态重跑校验。
+- `bff.py` 覆盖:health、画像往返、chat SSE 出草稿、needs_input、**LLM 纠错续跑同线程**。
 
 ---
 

@@ -282,6 +282,7 @@ async def chat(req: ChatRequest):
                 inp = result.get("input") or res.get("pending_input") or {}
                 events.put(_sse("needs_input", threadId=thread_id, status=res.get("status"),
                                 kind=inp.get("kind"), question=inp.get("question") or "需要补充输入",
+                                resumeMode=inp.get("resumeMode"), category=inp.get("category"),
                                 detail=inp, drafts=result.get("drafts") or [],
                                 correctionSummary=res.get("correction_summary") or []))
             else:

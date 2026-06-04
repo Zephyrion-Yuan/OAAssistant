@@ -400,9 +400,16 @@ createApp({
     needsHtml(ev) {
       const cards = (ev.drafts || []).map((d) => this.draftCard(d)).join('');
       const detail = this.needsDetailHtml(ev.detail || {});
-      const tips = `<div style="font-size:12px;color:#6b7488;margin-top:6px">下一条消息会作为本线程的补充/修正继续处理，不会重新发起新需求。</div>`;
+      const mode = ev.resumeMode || (ev.detail && ev.detail.resumeMode) || 'correct';
+      const head = mode === 'action' ? '需要操作或补充' : '需补充信息';
+      const tip = mode === 'action'
+        ? '在 OA / 主数据里处理后回复「已处理 / 已登录」即可继续；也可以直接补充缺失信息。'
+        : mode === 'mixed'
+        ? '可直接补充缺失信息，或在 OA / 主数据处理后回复「已处理」继续。'
+        : '下一条消息会作为本线程的补充 / 修正继续处理，不会重新发起新需求。';
+      const tips = `<div style="font-size:12px;color:#6b7488;margin-top:6px">${tip}</div>`;
       return `<div style="border:1px solid #f0d9a8;background:#fff8ea;border-radius:10px;padding:9px 11px;margin:6px 0">
-        <b style="color:#9a6700">需补充信息</b> <span style="color:#8a93a6;font-size:12px">(${esc(ev.kind || '')})</span>
+        <b style="color:#9a6700">${head}</b> <span style="color:#8a93a6;font-size:12px">(${esc(ev.kind || '')})</span>
         <div style="margin-top:3px;white-space:pre-wrap">${esc(ev.question || '')}</div>${detail}${tips}</div>${cards}`;
     },
     needsDetailHtml(detail) {

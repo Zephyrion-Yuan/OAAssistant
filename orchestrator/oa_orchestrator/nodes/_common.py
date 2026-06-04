@@ -6,6 +6,12 @@ from typing import Any, Dict, List
 # Mirrors config/oa-workflow-89-stock-transfer.json "movementType" default.
 DEFAULT_MOVEMENT_TYPE = "普通库存转储至普通库存"
 
+# resumeMode — how the dialogue node (apply_corrections) should treat the user's
+# next message for a given blocked/guided state. Set by the assist node.
+RESUME_CORRECT = "correct"   # expects a data value/correction
+RESUME_ACTION = "action"     # user performs an external action, then reports done
+RESUME_MIXED = "mixed"       # either a data correction OR an action-done report
+
 
 def needs_out_wbs(movement_type: str) -> bool:
     return str(movement_type or "").startswith("项目库存转储")

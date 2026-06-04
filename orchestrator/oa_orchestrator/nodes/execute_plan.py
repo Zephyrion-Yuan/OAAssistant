@@ -23,6 +23,25 @@ _ROUTER = {
 }
 
 
+def _bucket_key(entry: Dict[str, Any]) -> str:
+    """Stable identity for an allocation bucket, content-sensitive.
+
+    Includes the material lines (code:qty:unit) so that a correction which
+    *changes* a bucket's contents produces a new key (it re-runs), while an
+    untouched, already-saved bucket keeps its key (it is skipped on rerun).
+    """
+    lines = entry.get("materialLines") or []
+    sig = ";".join(sorted(
+        f"{l.get('materialCode')}:{l.get('quantity')}:{l.get('unit')}" for l in lines
+    ))
+    return "|".join([
+        str(entry.get("workflow_id") or ""),
+        str(entry.get("wbsCode") or ""),
+        str(entry.get("transferOutWbs") or ""),
+        sig,
+    ])
+
+
 def _draft_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
     result = entry.get("result") or {}
     return {
@@ -36,6 +55,7 @@ def _draft_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
         "needsInput": result.get("needsInput") or entry.get("needsInput"),
         "skipped": bool(entry.get("skipped")),
         "skipReason": entry.get("skipReason"),
+        "reused": bool(entry.get("reused")),
     }
 
 
@@ -87,8 +107,18 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     def execute_plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
         plan = dict(state.get("plan") or {})
         entries = [dict(e) for e in (plan.get("entries", []) or [])]
+        save = bool(state.get("save", False))
+        # Preserved across a correction rerun: buckets already saved to OA keep
+        # their requestId so we never create a duplicate draft (idempotency).
+        # Only meaningful in save mode (dry-run has no real draft to duplicate).
+        saved_buckets = dict(state.get("saved_buckets") or {})
 
         for entry in entries:
+            key = _bucket_key(entry)
+            if save and key in saved_buckets:
+                entry["result"] = dict(saved_buckets[key])
+                entry["reused"] = True
+                continue
             if entry.get("skipped") or not entry.get("request"):
                 entry["result"] = {"ok": False, "skipped": True, "needsInput": entry.get("needsInput")}
                 continue
@@ -104,14 +134,27 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                 entry["result"] = result.model_dump()
             except Exception as exc:  # noqa: BLE001
                 entry["result"] = {"ok": False, "error": f"execute failed: {exc}"}
+            if save and entry["result"].get("ok") and entry["result"].get("requestId"):
+                saved_buckets[key] = entry["result"]
 
         plan["entries"] = entries
         drafts = [_draft_summary(e) for e in entries]
         saved = [d for d in drafts if d["ok"]]
+        reused = [d for d in drafts if d["reused"]]
         pending = [d for d in drafts if not d["ok"]]
         pending_items = [item for item in (_pending_item(e) for e in entries) if item]
         pending_input = _input_from_pending(pending_items)
         all_ok = bool(entries) and all(d["ok"] for d in drafts)
+        # Surface hard-error buckets (raw exception, no structured input) at the
+        # top level so the assist node's residual triage can see them.
+        error_msgs = [
+            f"{e.get('workflow_id')}/WBS {e.get('wbsCode') or '-'}: {(e.get('result') or {}).get('error')}"
+            for e in entries
+            if not (e.get("result") or {}).get("ok")
+            and not (e.get("result") or {}).get("needsInput")
+            and not (e.get("result") or {}).get("skipped")
+            and (e.get("result") or {}).get("error")
+        ]
 
         result = {
             "ok": all_ok,
@@ -119,15 +162,18 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
             "dryRun": not bool(state.get("save", False)),
             "draftCount": len(drafts),
             "savedCount": len(saved),
+            "reusedCount": len(reused),
             "pendingCount": len(pending),
             "needsInput": bool(pending_input) or ((not all_ok) and any(d.get("needsInput") or d.get("skipped") for d in pending)),
             "input": pending_input,
+            "error": "; ".join(error_msgs) or None,
             "drafts": drafts,
             "notes": (plan.get("notes") or []),
         }
         history = append_history(state, {"node": "execute_plan", "ok": all_ok,
                                          "drafts": len(drafts), "saved": len(saved),
-                                         "pending": len(pending)})
-        return {"plan": plan, "plan_results": drafts, "result": result, "history": history}
+                                         "reused": len(reused), "pending": len(pending)})
+        return {"plan": plan, "plan_results": drafts, "result": result,
+                "saved_buckets": saved_buckets, "history": history}
 
     return execute_plan_node

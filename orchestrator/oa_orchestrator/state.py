@@ -48,6 +48,7 @@ class GraphState(TypedDict, total=False):
     correction_history: List[Dict[str, Any]]   # applied in-place corrections
     correction_summary: List[str]              # last applied correction summary
     wbs_overrides: Dict[str, Dict[str, Any]]   # run-local WBS bound-field patches
+    saved_buckets: Dict[str, Any]              # bucketKey -> saved draft result (idempotent rerun)
 
     # control
     status: str
@@ -90,6 +91,7 @@ def new_state(request: str, excel_path: Optional[str], thread_id: str,
         correction_history=[],
         correction_summary=[],
         wbs_overrides={},
+        saved_buckets={},
         status=STATUS_RUNNING,
         retries=0,
         history=[],
