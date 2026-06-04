@@ -6,6 +6,7 @@
   <title>OA 采购助手</title>
   <link rel="stylesheet" href="./styles.css" />
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <!-- deep-chat: MIT, framework-agnostic chat web component (CDN, no build) -->
   <script type="module" src="https://cdn.jsdelivr.net/npm/deep-chat@2/dist/deepChat.bundle.js"></script>
 </head>
@@ -34,6 +35,27 @@
     <!-- RIGHT: request builder -->
     <section class="pane right">
       <div class="rhead"><h3>采购需求</h3><span class="muted">填好需求行,点「发起申请」→ 左侧助手实时分流出草稿</span></div>
+      <div class="uploadbar">
+        <div class="uploadtitle">
+          <strong>采购附件</strong>
+          <span class="muted">Sheet1 · 物料编码 / 采购数量</span>
+        </div>
+        <div class="uploadactions">
+          <label class="filebtn" :class="{disabled: uploadState.busy}">
+            <input type="file" multiple accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" @change="importPurchaseFiles" :disabled="uploadState.busy" />
+            {{ uploadState.busy ? '解析中...' : '上传表格' }}
+          </label>
+          <button class="ghost" @click="clearDemandRows" :disabled="busy || uploadState.busy">清空需求</button>
+        </div>
+        <div class="uploadmsg" v-if="uploadState.message || uploadState.errors.length || uploadState.warnings.length">
+          <span v-if="uploadState.message">{{ uploadState.message }}</span>
+          <span class="badtext" v-for="e in uploadState.errors" :key="e">{{ e }}</span>
+          <span class="warntext" v-for="w in uploadState.warnings.slice(0,3)" :key="w">{{ w }}</span>
+        </div>
+        <div class="uploadpreview" v-if="uploadState.lastRows.length">
+          <span v-for="r in uploadState.lastRows" :key="r.materialCode">{{ r.materialCode }}<em v-if="r.materialName"> · {{ r.materialName }}</em> × {{ r.quantity }}</span>
+        </div>
+      </div>
       <div class="rows">
         <div class="rrow rhdr"><span>物料编码</span><span>名称</span><span>数量</span><span>单位</span><span>WBS / 别称</span><span>工厂</span><span></span></div>
         <div class="rrow" v-for="(r,i) in demandRows" :key="i">
@@ -97,7 +119,7 @@
       </div>
       <!-- WBS 管理 -->
       <div v-show="cfgTab==='WBS 管理'">
-        <p class="muted small">每个 WBS 绑定工厂/成本中心/采购人/库存地点;<b>别称</b>支持模糊引用。</p>
+        <p class="muted small">每个 WBS 绑定工厂/成本中心/采购人/库存地点和 458 默认选项;<b>别称</b>支持模糊引用。{{ optionMsg }}</p>
         <div class="fgrid">
           <label>WBS编码*<input v-model="wbsForm.wbsCode" placeholder="C2-0225002.06.01" /></label>
           <label>别称(逗号分隔)<input v-model="wbsForm.alias" placeholder="传感器项目, SA探针" /></label>
@@ -109,6 +131,24 @@
           <label>库存地点名称<input v-model="wbsForm.stockLocationName" /></label>
           <label>库存地点SAP<input v-model="wbsForm.stockLocationSapCode" /></label>
           <label>需求日期偏移(天)<input v-model="wbsForm.demandDateOffsetDays" type="number" min="0" /></label>
+          <label>是否为项目型
+            <select v-model="wbsForm.projectType">
+              <option value="">使用目录默认</option>
+              <option v-for="o in optionGroup('oa458.projectType')" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </label>
+          <label>采购类型
+            <select v-model="wbsForm.purchaseType">
+              <option value="">使用目录默认</option>
+              <option v-for="o in optionGroup('oa458.purchaseType')" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </label>
+          <label>附件需求类型
+            <select v-model="wbsForm.purchaseDemandType">
+              <option value="">使用目录默认</option>
+              <option v-for="o in optionGroup('oa458.purchaseDemandType')" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </label>
           <label class="full">送货地址<input v-model="wbsForm.deliveryAddress" /></label>
           <label class="full">备注<input v-model="wbsForm.remark" /></label>
         </div>
@@ -119,10 +159,11 @@
           <button class="ghost" @click="loadWbs">刷新</button>
         </div>
         <div class="wbstable">
-          <div class="wt hdr"><span>WBS</span><span>别称</span><span>工厂</span><span>成本中心</span><span>库存地点</span><span></span></div>
+          <div class="wt hdr"><span>WBS</span><span>别称</span><span>工厂</span><span>成本中心</span><span>库存地点</span><span>458默认</span><span></span></div>
           <div class="wt" v-for="w in wbsList" :key="w.wbsCode" :class="{arch: w.status==='archived'}">
             <span :title="w.wbsCode">{{ w.wbsCode }}</span><span>{{ w.alias || '-' }}</span><span>{{ w.demandFactoryCode || '-' }}</span>
             <span>{{ w.costCenter || '-' }}</span><span>{{ [w.stockLocationName,w.stockLocationSapCode].filter(Boolean).join('/') || '-' }}</span>
+            <span :title="[w.projectType,w.purchaseType,w.purchaseDemandType].filter(Boolean).join(' / ')">{{ [w.projectType,w.purchaseType,w.purchaseDemandType].filter(Boolean).join('/') || '-' }}</span>
             <span class="wacts">
               <button class="link" @click="editWbs(w)">编辑</button>
               <button class="link danger" @click="delWbs(w.wbsCode)">{{ wbsDeleteArm===w.wbsCode ? '确认?' : '删' }}</button>

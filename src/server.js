@@ -8,6 +8,7 @@ import { cachedProfileSession } from './browser/cachedProfileSession.js';
 import { openLoginPage, scanOaPage, fillOaPage } from './automation/oaAutomation.js';
 import { queryOaInventory } from './automation/oaInventoryQuery.js';
 import { listWbs, getWbs, upsertWbs, archiveWbs, deleteWbs, resolveWbs } from './automation/wbsRegistry.js';
+import { optionCatalog, upsertOptionGroup } from './automation/optionCatalog.js';
 import { queryPdmMaterial } from './automation/pdmAutomation.js';
 import { runStockTransfer, NeedInputError } from './automation/flows/stockTransfer.js';
 import { runOutbound, NeedInputError as OutboundNeedInputError } from './automation/flows/outbound.js';
@@ -18,7 +19,7 @@ import { diagnoseSystemSession } from './automation/sessionDiagnostics.js';
 import { explorePage } from './explorer/pageExplorer.js';
 import { ensureDir, pagesConfig, repoRoot, runtimeDir } from './config.js';
 import { cacheEdgeProfile, closeEdgeBackgroundProcesses, profileCacheStatus } from './profile/profileCache.js';
-import { testCachedProfileLogin, testOaLiveSession, testPdmCachedProfileLogin, testPdmLiveSession } from './profile/testLogin.js';
+import { testCachedProfileLogin, testOaCachedProfileLogin, testOaLiveSession, testPdmCachedProfileLogin, testPdmLiveSession } from './profile/testLogin.js';
 import { redactText, redactUrl } from './security/redaction.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -297,6 +298,7 @@ const purchaseSchema = z.object({
   purchaseType: z.string().optional(),
   projectType: z.string().optional(),
   loginTimeoutMs: z.number().optional(),
+  wbsAutofillTimeoutMs: z.number().optional(),
   save: z.boolean().optional()
 }).passthrough();
 
@@ -328,6 +330,9 @@ const wbsUpsertSchema = z.object({
   mrpController: z.string().optional(),
   stockLocationName: z.string().optional(),
   stockLocationSapCode: z.string().optional(),
+  projectType: z.string().optional(),
+  purchaseType: z.string().optional(),
+  purchaseDemandType: z.string().optional(),
   deliveryAddress: z.string().optional(),
   demandDateOffsetDays: z.union([z.string(), z.number()]).nullish(),
   remark: z.string().optional(),
@@ -380,6 +385,10 @@ async function handleApi(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/api/wbs/list') {
     const includeArchived = ['1', 'true', 'yes'].includes((url.searchParams.get('includeArchived') || '').toLowerCase());
     sendJson(response, 200, listWbs({ includeArchived }));
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/options/catalog') {
+    sendJson(response, 200, optionCatalog());
     return;
   }
 
@@ -467,6 +476,10 @@ async function handleApi(request, response, url) {
     sendJson(response, 200, resolveWbs(body));
     return;
   }
+  if (url.pathname === '/api/options/catalog') {
+    sendJson(response, 200, upsertOptionGroup(body));
+    return;
+  }
   if (url.pathname === '/api/pdm/login-diagnose') {
     sendJson(response, 200, await diagnosePdmLogin(body));
     return;
@@ -476,6 +489,11 @@ async function handleApi(request, response, url) {
     return;
   }
   if (url.pathname === '/api/profile/cache') {
+    await cachedProfileSession.close();
+    sendJson(response, 200, cacheEdgeProfile({ force: body.force !== false }));
+    return;
+  }
+  if (url.pathname === '/api/oa/profile/cache') {
     await cachedProfileSession.close();
     sendJson(response, 200, cacheEdgeProfile({ force: body.force !== false }));
     return;
@@ -491,6 +509,11 @@ async function handleApi(request, response, url) {
   }
   if (url.pathname === '/api/profile/test-login') {
     sendJson(response, 200, await testCachedProfileLogin());
+    return;
+  }
+  if (url.pathname === '/api/oa/profile/test') {
+    await cachedProfileSession.close();
+    sendJson(response, 200, await testOaCachedProfileLogin());
     return;
   }
   if (url.pathname === '/api/pdm/profile/test') {

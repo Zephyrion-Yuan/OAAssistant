@@ -6,6 +6,7 @@ import { waitForSettledPage, detectLoginPage } from '../domScanner.js';
 import { attachSafeNetworkRecorder } from '../../explorer/safeNetworkRecorder.js';
 import { scanPageSurface } from '../../explorer/surfaceScanner.js';
 import { redactUrl } from '../../security/redaction.js';
+import { optionDefault } from '../optionCatalog.js';
 
 // Server-callable core of OA workflow 458 (purchase request / 采购申请).
 // Excel parsing + attachment normalization has been lifted out: this module
@@ -16,6 +17,16 @@ import { redactUrl } from '../../security/redaction.js';
 // the CLI wrapper closes it in finally).
 
 const purchaseRuntimeDir = path.join(runtimeDir, 'purchase-requests');
+const DEFAULT_PURCHASE_TYPE = '项目物资采购申请';
+const DEFAULT_PROJECT_TYPE = '是';
+const DEFAULT_WBS_AUTOFILL_TIMEOUT_MS = 20000;
+const WBS_AUTOFILL_FIELDS = [
+  { key: 'projectCodeText', label: '项目编码文本', id: '21088', required: true },
+  { key: 'projectManager', label: '项目经理', id: '10444', required: true },
+  { key: 'projectName', label: '项目名称', id: '10447', required: false },
+  { key: 'pdt', label: 'PDT', id: '10448', required: true },
+  { key: 'bu', label: 'BU', id: '10449', required: true }
+];
 
 export class NeedInputError extends Error {
   constructor(message, payload = {}) {
@@ -145,6 +156,80 @@ async function selectWbs(page, wbsCode) {
   await waitForSettledPage(page);
 }
 
+async function readWbsAutofillSnapshot(page, projectDefinition) {
+  return page.evaluate(({ fields, expectedProjectDefinition }) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const textFromElement = (element) => {
+      if (!element) return '';
+      const values = [
+        element.value,
+        element.getAttribute?.('title'),
+        element.getAttribute?.('data-value'),
+        element.getAttribute?.('data-fieldvalue')
+      ];
+      const clone = element.cloneNode(true);
+      clone.querySelectorAll?.('button,svg,script,style').forEach((node) => node.remove());
+      values.push(clone.textContent);
+      return normalize(values.filter(Boolean).join(' '));
+    };
+    const readField = (id) => {
+      const candidates = [
+        document.querySelector(`#field${id}`),
+        document.querySelector(`[name="field${id}"]`),
+        document.querySelector(`#field${id}span`)
+      ].filter(Boolean);
+      const text = candidates.map(textFromElement).filter(Boolean).join(' ');
+      return normalize(text);
+    };
+    const hasValue = (value) => {
+      const text = normalize(value);
+      return Boolean(text && !/^(请选择|选择|浏览|暂无数据|No Data|-)$/.test(text));
+    };
+
+    const values = {};
+    for (const field of fields) {
+      values[field.key] = readField(field.id);
+    }
+    const missing = fields
+      .filter((field) => field.required && !hasValue(values[field.key]))
+      .map((field) => field.label);
+    const mismatches = [];
+    if (expectedProjectDefinition && hasValue(values.projectCodeText)
+      && !values.projectCodeText.includes(expectedProjectDefinition)) {
+      mismatches.push(`项目编码文本未包含 ${expectedProjectDefinition}`);
+    }
+
+    return {
+      ok: missing.length === 0 && mismatches.length === 0,
+      missing,
+      mismatches,
+      values
+    };
+  }, { fields: WBS_AUTOFILL_FIELDS, expectedProjectDefinition: projectDefinition || '' });
+}
+
+async function waitForWbsAutofill(page, excel, timeoutMs = DEFAULT_WBS_AUTOFILL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let snapshot = null;
+  while (Date.now() < deadline) {
+    snapshot = await readWbsAutofillSnapshot(page, excel.projectDefinition);
+    if (snapshot.ok) return snapshot;
+    await page.waitForTimeout(500);
+  }
+
+  const missingText = snapshot?.missing?.length ? snapshot.missing.join('、') : '未知字段';
+  const mismatchText = snapshot?.mismatches?.length ? `；${snapshot.mismatches.join('；')}` : '';
+  throw new NeedInputError(`WBS-linked autofill did not complete for ${excel.wbsCode}.`, {
+    kind: 'wbsAutofill',
+    question: `已选中 WBS ${excel.wbsCode}，但 OA 没有在 ${timeoutMs}ms 内完整回填项目联动字段：${missingText}${mismatchText}。请确认该 WBS 是否有效、是否为项目型 WBS，或在页面上手动核对后重试。`,
+    wbsCode: excel.wbsCode,
+    projectDefinition: excel.projectDefinition,
+    missing: snapshot?.missing || [],
+    mismatches: snapshot?.mismatches || [],
+    observed: snapshot?.values || {}
+  });
+}
+
 async function selectDemandCompany(page, factoryCode, companyName) {
   await openBrowserField(page, '#field10450span > div:nth-of-type(2) > button');
   const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
@@ -272,9 +357,10 @@ export async function runPurchase(input = {}) {
       throw new Error('runPurchase requires input.structured with a normalizedPath attachment.');
     }
 
-    const purchaseType = input.purchaseType || '项目物资采购申请';
-    const projectType = input.projectType || '是';
+    const purchaseType = input.purchaseType || optionDefault('oa458.purchaseType', DEFAULT_PURCHASE_TYPE);
+    const projectType = input.projectType || optionDefault('oa458.projectType', DEFAULT_PROJECT_TYPE);
     const loginTimeoutMs = input.loginTimeoutMs ?? 180000;
+    const wbsAutofillTimeoutMs = input.wbsAutofillTimeoutMs ?? DEFAULT_WBS_AUTOFILL_TIMEOUT_MS;
     const save = Boolean(input.save);
 
     const pageConfig = resolveOaPage({ pageId: 'oa-workflow-458', url: input.url });
@@ -300,14 +386,17 @@ export async function runPurchase(input = {}) {
       const startedCount = recorder.count();
       const startedAt = new Date().toISOString();
       try {
-        await fn();
-        actions.push({
+        const detail = await fn();
+        const action = {
           name,
           ok: true,
           startedAt,
           finishedAt: new Date().toISOString(),
           newApiCallCount: recorder.count() - startedCount
-        });
+        };
+        if (detail !== undefined) action.detail = detail;
+        actions.push(action);
+        return detail;
       } catch (error) {
         actions.push({
           name,
@@ -324,11 +413,14 @@ export async function runPurchase(input = {}) {
     await step(`Set 是否为项目型 = ${projectType}`, async () => {
       await selectDropdownOption(page, '#weaSelect_1 div[role="combobox"]', projectType);
     });
-    await step(`Set 采购类型 = ${purchaseType}`, async () => {
-      await selectDropdownOption(page, '#weaSelect_2 div[role="combobox"]', purchaseType);
-    });
     await step(`Select WBS ${excel.wbsCode}`, async () => {
       await selectWbs(page, excel.wbsCode);
+    });
+    await step('Wait for WBS linked autofill', async () => {
+      return waitForWbsAutofill(page, excel, wbsAutofillTimeoutMs);
+    });
+    await step(`Set 采购类型 = ${purchaseType}`, async () => {
+      await selectDropdownOption(page, '#weaSelect_2 div[role="combobox"]', purchaseType);
     });
     await step(`Select 需求公司 ${excel.demandFactoryCode}`, async () => {
       await selectDemandCompany(page, excel.demandFactoryCode, excel.demandCompanyName);
@@ -387,6 +479,7 @@ export async function runPurchase(input = {}) {
         targetDemandDate: excel.targetDemandDate,
         purchaseType,
         projectType,
+        wbsAutofillTimeoutMs,
         saved: save,
         actionCount: actions.length
       },

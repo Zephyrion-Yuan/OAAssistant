@@ -130,6 +130,16 @@ async def wbs_list(includeArchived: bool = False):  # noqa: N803 (query param na
     return await _proxy("GET", f"/api/wbs/list?includeArchived={'1' if includeArchived else '0'}")
 
 
+@app.get("/api/options/catalog")
+async def options_catalog():
+    return await _proxy("GET", "/api/options/catalog")
+
+
+@app.post("/api/options/catalog")
+async def options_catalog_upsert(body: Dict[str, Any]):
+    return await _proxy("POST", "/api/options/catalog", json=body)
+
+
 @app.post("/api/wbs/upsert")
 async def wbs_upsert(body: Dict[str, Any]):
     return await _proxy("POST", "/api/wbs/upsert", json=body)
@@ -179,6 +189,7 @@ class ChatRequest(BaseModel):
     save: bool = False
     executor: str = "mock"   # "mock" | "http-node"
     userId: Optional[str] = None
+    continueThread: bool = False
 
 
 def _business_from_demand_rows(rows: List[Dict[str, Any]]) -> BusinessInput:
@@ -228,13 +239,14 @@ def _summarize(delta: Any) -> str:
 async def chat(req: ChatRequest):
     executor_key = "http-node" if req.executor == "http-node" else "mock"
     rt_settings, executor, graph = _runtime(executor_key)
-    thread_id = req.threadId or f"chat-{uuid.uuid4().hex[:8]}"
+    continuation = bool(req.continueThread and req.threadId)
+    thread_id = req.threadId if continuation else (req.threadId or f"chat-{uuid.uuid4().hex[:8]}")
 
     profile = None
     if req.userId:
         stored = store.get_profile(settings.store_path, req.userId)
         profile = stored.model_dump() if stored else None
-    if req.demandRows:
+    if req.demandRows and not continuation:
         store.save_business_input(settings.store_path, thread_id,
                                   _business_from_demand_rows(req.demandRows), None)
 
@@ -248,21 +260,36 @@ async def chat(req: ChatRequest):
                     continue
                 events.put(_sse("node", node=node, summary=_summarize(delta)))
         try:
+            kwargs = {
+                "thread_id": thread_id,
+                "save": req.save,
+                "mode": "acquire",
+                "profile": profile,
+                "graph": graph,
+                "executor": executor,
+                "settings": rt_settings,
+                "on_update": on_update,
+            }
+            if continuation:
+                kwargs["correction"] = req.message
+            else:
+                kwargs["request"] = req.message or "采购申请"
             res = run_workflow(
-                request=req.message or "采购申请", thread_id=thread_id, save=req.save,
-                mode="acquire", profile=profile, graph=graph, executor=executor,
-                settings=rt_settings, on_update=on_update,
+                **kwargs,
             )
             result = res.get("result") or {}
             if result.get("needsInput") or res.get("status") == "needs_input":
-                inp = result.get("input") or {}
+                inp = result.get("input") or res.get("pending_input") or {}
                 events.put(_sse("needs_input", threadId=thread_id, status=res.get("status"),
                                 kind=inp.get("kind"), question=inp.get("question") or "需要补充输入",
-                                detail=inp, drafts=result.get("drafts") or []))
+                                detail=inp, drafts=result.get("drafts") or [],
+                                correctionSummary=res.get("correction_summary") or []))
             else:
                 events.put(_sse("final", threadId=thread_id, status=res.get("status"),
                                 ok=result.get("ok"), drafts=result.get("drafts") or [],
-                                notes=result.get("notes") or [], auditPath=res.get("audit_path")))
+                                notes=result.get("notes") or [],
+                                correctionSummary=res.get("correction_summary") or [],
+                                auditPath=res.get("audit_path")))
         except Exception as exc:  # noqa: BLE001
             events.put(_sse("error", error=str(exc)))
         finally:
@@ -271,7 +298,7 @@ async def chat(req: ChatRequest):
     threading.Thread(target=worker, daemon=True).start()
 
     async def stream():
-        yield _sse("start", threadId=thread_id, executor=executor_key)
+        yield _sse("start", threadId=thread_id, executor=executor_key, continuation=continuation)
         while True:
             item = await asyncio.to_thread(events.get)
             if item is sentinel:

@@ -43,6 +43,11 @@ class GraphState(TypedDict, total=False):
     resolved: Optional[Dict[str, Any]]         # FillRequest dump (sans structured)
     result: Optional[Dict[str, Any]]           # ExecutionResult dump
     diagnosis: Optional[Dict[str, Any]]        # Diagnosis dump
+    pending_input: Optional[Dict[str, Any]]    # structured continuation request
+    correction: Optional[str]                  # user's follow-up for pending_input
+    correction_history: List[Dict[str, Any]]   # applied in-place corrections
+    correction_summary: List[str]              # last applied correction summary
+    wbs_overrides: Dict[str, Dict[str, Any]]   # run-local WBS bound-field patches
 
     # control
     status: str
@@ -80,6 +85,11 @@ def new_state(request: str, excel_path: Optional[str], thread_id: str,
         resolved=None,
         result=None,
         diagnosis=None,
+        pending_input=None,
+        correction=None,
+        correction_history=[],
+        correction_summary=[],
+        wbs_overrides={},
         status=STATUS_RUNNING,
         retries=0,
         history=[],

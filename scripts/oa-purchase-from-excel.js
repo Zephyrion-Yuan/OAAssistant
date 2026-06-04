@@ -47,10 +47,11 @@ program
   .description('Create an OA workflow 458 purchase request draft from a normalized Excel attachment.')
   .requiredOption('-f, --file <path>', 'purchase request Excel file')
   .option('--url <url>', 'override OA workflow URL')
-  .option('--purchase-type <text>', 'purchase type option text', '项目物资采购申请')
-  .option('--project-type <text>', 'whether project type option text', '是')
+  .option('--purchase-type <text>', 'purchase type option text; omit to use backend option catalog default')
+  .option('--project-type <text>', 'whether project type option text; omit to use backend option catalog default')
   .option('--days-offset <days>', 'demand date offset from today', Number, 5)
   .option('--login-timeout-ms <ms>', 'wait for manual login if OA opens a login page', Number, 180000)
+  .option('--wbs-autofill-timeout-ms <ms>', 'wait for WBS-linked OA autofill after selecting WBS', Number, 20000)
   .option('--pause-on-error-ms <ms>', 'keep the browser visible for inspection before closing after an error', Number, 120000)
   .option('--no-save', 'fill and upload but do not click 保存');
 
@@ -65,6 +66,7 @@ runPurchase({
   purchaseType: options.purchaseType,
   projectType: options.projectType,
   loginTimeoutMs: options.loginTimeoutMs,
+  wbsAutofillTimeoutMs: options.wbsAutofillTimeoutMs,
   save: options.save
 })
   .then((result) => {

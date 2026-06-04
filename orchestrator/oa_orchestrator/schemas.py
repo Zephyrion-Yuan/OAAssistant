@@ -190,6 +190,7 @@ class PurchaseFillRequest(BaseModel):
     purchaseType: Optional[str] = None
     projectType: Optional[str] = None
     loginTimeoutMs: Optional[int] = None
+    wbsAutofillTimeoutMs: Optional[int] = None
     save: bool = False
 
 
@@ -250,6 +251,9 @@ class WbsRecord(BaseModel):
     mrpController: str = ""
     stockLocationName: str = ""
     stockLocationSapCode: str = ""
+    projectType: str = ""
+    purchaseType: str = ""
+    purchaseDemandType: str = ""
     deliveryAddress: str = ""
     demandDateOffsetDays: Optional[int] = None
     remark: str = ""

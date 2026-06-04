@@ -30,8 +30,11 @@ PURCHASE_ATTACHMENT_HEADERS = [
     "网络编码", "网络活动", "成本中心", "MRP控制者", "需求工厂代码", "供应工厂代码",
     "送货地址", "备注", "所需供应商", "OA申请单号",
 ]
-# 需求类型: "02" = 采购申请+预留 (the common project-purchase type).
-DEFAULT_PURCHASE_TYPE = "02"
+# 458 attachment 需求类型: "02" = 采购申请+预留.
+DEFAULT_PURCHASE_DEMAND_TYPE = "02"
+# 458 OA main form defaults.
+DEFAULT_OA_PURCHASE_TYPE = "项目物资采购申请"
+DEFAULT_OA_PROJECT_TYPE = "是"
 # Acquire-mode 89 always moves another project's special stock into the demand
 # project's special stock, so the movement type is fixed.
 MOVEMENT_TYPE_ACQUIRE_89 = "项目库存转储至项目库存"
@@ -127,6 +130,7 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         save = bool(state.get("save", False))
         thread = state.get("thread_id", "default")
         attach_dir = settings.runtime_dir / thread / "attachments"
+        wbs_overrides = state.get("wbs_overrides") or {}
 
         prepared = []
         skipped = 0
@@ -134,6 +138,7 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
             entry = dict(raw)
             wf = entry.get("workflow_id")
             bound = executor.query_wbs(entry.get("wbsCode", "")) or {}
+            bound = {**bound, **dict(wbs_overrides.get(entry.get("wbsCode", ""), {}))}
             entry["bound"] = bound
             factory = _factory(entry, bound)
             proj = entry.get("projectDefinition") or bound.get("projectDefinition", "")
@@ -154,6 +159,7 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                             structured=structured, save=save).model_dump(exclude_none=True)
                 elif wf == "89":
                     src = executor.query_wbs(entry.get("transferOutWbs", "")) or {}
+                    src = {**src, **dict(wbs_overrides.get(entry.get("transferOutWbs", ""), {}))}
                     in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
                     out_name, out_sap = src.get("stockLocationName"), src.get("stockLocationSapCode")
                     if not (in_name or in_sap) or not (out_name or out_sap):
@@ -175,8 +181,22 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                     offset = bound.get("demandDateOffsetDays")
                     offset = int(offset) if offset not in (None, "") else 5
                     target_text = (date.today() + timedelta(days=offset)).strftime("%Y%m%d")
-                    purchase_type = entry.get("purchaseType") or DEFAULT_PURCHASE_TYPE
-                    path = generate_purchase_attachment(entry, bound, factory, target_text, purchase_type, attach_dir)
+                    demand_type = (
+                        entry.get("purchaseDemandType")
+                        or bound.get("purchaseDemandType")
+                        or DEFAULT_PURCHASE_DEMAND_TYPE
+                    )
+                    oa_purchase_type = (
+                        entry.get("purchaseType")
+                        or bound.get("purchaseType")
+                        or DEFAULT_OA_PURCHASE_TYPE
+                    )
+                    project_type = (
+                        entry.get("projectType")
+                        or bound.get("projectType")
+                        or DEFAULT_OA_PROJECT_TYPE
+                    )
+                    path = generate_purchase_attachment(entry, bound, factory, target_text, demand_type, attach_dir)
                     structured = {
                         "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
                         "demandFactoryCode": factory,
@@ -184,7 +204,9 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                         "targetDemandDate": target_text, "normalizedPath": path,
                     }
                     entry["request"] = PurchaseFillRequest(
-                        structured=structured, save=save, purchaseType=purchase_type).model_dump(exclude_none=True)
+                        structured=structured, save=save,
+                        purchaseType=oa_purchase_type, projectType=project_type,
+                    ).model_dump(exclude_none=True)
                 elif wf == "414":
                     in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
                     if not (in_name or in_sap):

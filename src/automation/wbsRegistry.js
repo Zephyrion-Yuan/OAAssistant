@@ -28,6 +28,9 @@ const TEXT_FIELDS = [
   'mrpController',
   'stockLocationName',
   'stockLocationSapCode',
+  'projectType',        // 458 主表: 是否为项目型
+  'purchaseType',       // 458 主表: 采购类型
+  'purchaseDemandType', // 458 附件: 需求类型, e.g. 02
   'deliveryAddress',    // 458 送货地址 (per-project fixed address)
   'remark'
 ];

@@ -101,6 +101,37 @@ def main() -> int:
     assert final["type"] == "needs_input", final
     print("PASS chat SSE -> needs_input when WBS missing from registry")
 
+    # 5) continuation: unit mismatch stops with details; follow-up patches the
+    # same thread in place instead of starting a new request.
+    r = client.post("/api/chat", json={
+        "message": "采购",
+        "executor": "mock",
+        "save": False,
+        "demandRows": [
+            {"materialCode": "4000023659", "materialName": "PCR板", "quantity": "4",
+             "unit": "盒", "wbsCode": WBS, "demandFactoryCode": "1000"},
+        ],
+    })
+    events = _parse_sse(r.text)
+    need = next(e for e in events if e["type"] == "needs_input")
+    assert need["kind"] == "unitReview", need
+    assert need["detail"]["items"][0]["materialCode"] == "4000023659", need
+    thread_id = need["threadId"]
+
+    r = client.post("/api/chat", json={
+        "message": "4000023659 改成 4 EA",
+        "executor": "mock",
+        "save": False,
+        "threadId": thread_id,
+        "continueThread": True,
+    })
+    events = _parse_sse(r.text)
+    final = next(e for e in events if e["type"] in ("final", "needs_input"))
+    assert final["type"] == "final", final
+    assert final["status"] == "done", final
+    assert any(e.get("node") == "apply_corrections" for e in events if e["type"] == "node"), events
+    print("PASS chat continuation -> unit correction resumes same thread to final")
+
     print("\nALL BFF OFFLINE TESTS PASSED")
     return 0
 
