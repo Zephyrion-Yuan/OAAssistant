@@ -25,6 +25,7 @@ __pycache__/
 *.egg-info/
 
 # --- logs / local config ---
+logs/
 npm-debug.log*
 *.local.json
 
