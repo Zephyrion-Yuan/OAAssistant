@@ -90,7 +90,7 @@ def unit_check_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "needsInput": True,
             "input": {
                 "kind": "unitReview",
-                "question": "以下物料的需求单位与基本计量单位不一致,可能涉及包装换算,请确认换算后的单位/数量再继续。",
+                "question": "以下物料的需求单位/数量与 PDM 基本计量单位不一致，请确认后继续。可以回复“按建议修改”，或直接说“物料编码 改成 数量 单位”。",
                 "items": reviews,
             },
             "error": f"Unit review required for {len(reviews)} material(s).",

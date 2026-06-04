@@ -27,6 +27,11 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
         else:
             status = STATUS_DONE if result.get("ok") else STATUS_FAILED
 
+    pending_input = result.get("input") if result.get("needsInput") else state.get("pending_input")
+    pending_question = state.get("pending_question")
+    if status == STATUS_NEEDS_INPUT and not pending_question:
+        pending_question = (pending_input or {}).get("question") or result.get("error")
+
     thread = state.get("thread_id", "default")
     out_dir = settings.runtime_dir / thread
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -41,7 +46,9 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "resolved": state.get("resolved"),
         "result": result,
         "diagnosis": state.get("diagnosis"),
-        "pending_question": state.get("pending_question"),
+        "pending_question": pending_question,
+        "pending_input": pending_input,
+        "correction_history": state.get("correction_history", []),
         "graph_history": state.get("history", []),
         "playwright_actions": result.get("actions", []),
         "requestUrl": result.get("requestUrl"),
@@ -53,4 +60,10 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
 
     history = append_history(state, {"node": "finalize", "status": status, "audit": str(audit_path)})
-    return {"status": status, "audit_path": str(audit_path), "history": history}
+    return {
+        "status": status,
+        "audit_path": str(audit_path),
+        "pending_input": pending_input,
+        "pending_question": pending_question,
+        "history": history,
+    }

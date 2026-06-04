@@ -123,6 +123,8 @@ def main() -> int:
 
     # 2) generated 458 attachment matches the real 22-column 项目需求填写界面 layout
     entry458 = next(e for e in out["plan"]["entries"] if e["workflow_id"] == "458")
+    assert entry458["request"]["purchaseType"] == "项目物资采购申请", entry458["request"]
+    assert entry458["request"]["projectType"] == "是", entry458["request"]
     att = Path(entry458["request"]["structured"]["normalizedPath"])
     assert att.exists(), att
     awb = load_workbook(att)

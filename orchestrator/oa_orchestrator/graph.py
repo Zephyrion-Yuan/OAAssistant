@@ -22,6 +22,7 @@ from langgraph.graph import END, START, StateGraph
 from .state import (STATUS_FAILED, STATUS_NEEDS_INPUT, STATUS_NEEDS_LOGIN,
                     GraphState)
 from .nodes.intake import intake_node
+from .nodes.apply_corrections import apply_corrections_node
 from .nodes.understand import understand_node
 from .nodes.personalize import personalize_node
 from .nodes.check_slot import check_slot_node
@@ -50,6 +51,12 @@ def _result_failed(state: Dict[str, Any]) -> bool:
 
 def _route_after_intake(state: Dict[str, Any]) -> str:
     return "finalize" if state.get("status") == STATUS_FAILED else "preflight"
+
+
+def _route_after_correction(state: Dict[str, Any]) -> str:
+    if state.get("status") == STATUS_NEEDS_INPUT:
+        return "finalize"
+    return "finalize" if _result_failed(state) else "intake"
 
 
 def _route_after_preflight(state: Dict[str, Any]) -> str:
@@ -107,6 +114,7 @@ def build_acquire_graph(executor, checkpointer=None):
     Any upstream blocking result short-circuits to finalize (resumable).
     """
     g = StateGraph(GraphState)
+    g.add_node("apply_corrections", apply_corrections_node)
     g.add_node("intake", intake_node)
     g.add_node("preflight", make_preflight(executor))
     g.add_node("resolve_wbs", make_resolve_wbs(executor))
@@ -119,7 +127,9 @@ def build_acquire_graph(executor, checkpointer=None):
     g.add_node("execute_plan", make_execute_plan(executor))
     g.add_node("finalize", finalize_node)
 
-    g.add_edge(START, "intake")
+    g.add_edge(START, "apply_corrections")
+    g.add_conditional_edges("apply_corrections", _route_after_correction,
+                            {"finalize": "finalize", "intake": "intake"})
     g.add_conditional_edges("intake", _route_after_intake,
                             {"finalize": "finalize", "preflight": "preflight"})
     g.add_conditional_edges("preflight", _route_after_preflight,
@@ -145,6 +155,7 @@ def build_graph(executor, checkpointer=None, mode: str = "single"):
     if mode == "acquire":
         return build_acquire_graph(executor, checkpointer=checkpointer)
     g = StateGraph(GraphState)
+    g.add_node("apply_corrections", apply_corrections_node)
     g.add_node("intake", intake_node)
     g.add_node("preflight", make_preflight(executor))
     g.add_node("understand", understand_node)
@@ -158,7 +169,9 @@ def build_graph(executor, checkpointer=None, mode: str = "single"):
     g.add_node("diagnose", diagnose_node)
     g.add_node("finalize", finalize_node)
 
-    g.add_edge(START, "intake")
+    g.add_edge(START, "apply_corrections")
+    g.add_conditional_edges("apply_corrections", _route_after_correction,
+                            {"finalize": "finalize", "intake": "intake"})
     g.add_conditional_edges("intake", _route_after_intake,
                             {"finalize": "finalize", "preflight": "preflight"})
     g.add_conditional_edges("preflight", _route_after_preflight,

@@ -39,6 +39,50 @@ def _draft_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _pending_item(entry: Dict[str, Any]) -> Dict[str, Any] | None:
+    result = entry.get("result") or {}
+    need = result.get("input") or entry.get("needsInput")
+    if not need:
+        return None
+    item = dict(need)
+    item.update({
+        "workflow": entry.get("workflow_id"),
+        "workflow_id": entry.get("workflow_id"),
+        "wbsCode": entry.get("wbsCode"),
+        "transferOutWbs": entry.get("transferOutWbs"),
+        "materialLines": entry.get("materialLines", []),
+        "skipReason": entry.get("skipReason"),
+        "error": result.get("error") or entry.get("skipReason"),
+    })
+    return item
+
+
+def _input_from_pending(items: list[Dict[str, Any]]) -> Dict[str, Any] | None:
+    if not items:
+        return None
+    if len(items) == 1:
+        item = dict(items[0])
+        question = item.get("question") or item.get("error") or "该草稿需要补充信息后才能继续。"
+        item["question"] = (
+            f"{question}\n"
+            f"流程: {item.get('workflow_id') or item.get('workflow') or '-'}; "
+            f"WBS: {item.get('wbsCode') or '-'}"
+        )
+        return item
+    parts = []
+    for item in items:
+        parts.append(
+            f"{item.get('workflow_id') or item.get('workflow') or '-'} / "
+            f"WBS {item.get('wbsCode') or '-'}: "
+            f"{item.get('question') or item.get('error') or item.get('kind') or '需要补充'}"
+        )
+    return {
+        "kind": "draftReview",
+        "question": "部分草稿需要补充信息后才能继续:\n" + "\n".join(parts),
+        "items": items,
+    }
+
+
 def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     def execute_plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
         plan = dict(state.get("plan") or {})
@@ -65,6 +109,8 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         drafts = [_draft_summary(e) for e in entries]
         saved = [d for d in drafts if d["ok"]]
         pending = [d for d in drafts if not d["ok"]]
+        pending_items = [item for item in (_pending_item(e) for e in entries) if item]
+        pending_input = _input_from_pending(pending_items)
         all_ok = bool(entries) and all(d["ok"] for d in drafts)
 
         result = {
@@ -74,7 +120,8 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
             "draftCount": len(drafts),
             "savedCount": len(saved),
             "pendingCount": len(pending),
-            "needsInput": (not all_ok) and any(d.get("needsInput") or d.get("skipped") for d in pending),
+            "needsInput": bool(pending_input) or ((not all_ok) and any(d.get("needsInput") or d.get("skipped") for d in pending)),
+            "input": pending_input,
             "drafts": drafts,
             "notes": (plan.get("notes") or []),
         }

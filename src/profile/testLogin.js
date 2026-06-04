@@ -65,6 +65,32 @@ export async function testPdmCachedProfileLogin() {
   }
 }
 
+export async function testOaCachedProfileLogin() {
+  assertEdgeClosed();
+  const status = profileCacheStatus();
+  if (!status.exists) {
+    throw new Error(`Cached profile does not exist: ${status.cachedProfile}`);
+  }
+
+  const context = await chromium.launchPersistentContext(
+    cacheRoot,
+    browserLaunchOptions({ args: [`--profile-directory=${profileName}`] })
+  );
+
+  try {
+    const oaTarget = pagesConfig.oa.find((item) => item.id === 'oa-portal') || pagesConfig.oa[0];
+    const oa = await checkPage(context, oaTarget);
+    return {
+      ok: !oa.requiresLogin,
+      cache: status,
+      oa,
+      testedAt: new Date().toISOString()
+    };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
 export async function testCachedProfileLogin() {
   assertEdgeClosed();
   const status = profileCacheStatus();

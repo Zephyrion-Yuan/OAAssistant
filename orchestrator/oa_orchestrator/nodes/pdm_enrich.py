@@ -77,7 +77,7 @@ def make_pdm_enrich(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                     "needsInput": True,
                     "input": {
                         "kind": "material",
-                        "question": "以下物料编码在 PDM 中不存在或未启用，请核对后重试。",
+                        "question": "以下物料编码在 PDM 中不存在或未启用。请回复替换后的物料编码，例如“4000000000 改成 4000023659”。",
                         "badCodes": bad_codes,
                     },
                     "error": f"PDM validation failed for: {bad_codes}",

@@ -64,3 +64,17 @@ PDM 自动查询默认使用 `.runtime/edge-profile-cache/User Data/Default` 这
 - 执行 PDM 缓存前必须关闭所有 Edge，包括工具托管 OA 的 Edge；否则 Profile 会被锁定。
 - 如果只看到 `0 visible window(s)` 的 Edge 进程，前端的 `清 Edge 后台进程` 会关闭这些后台进程。
 - 工具不抓取钉钉本地请求，不导出 Cookie/token/authCode/code。
+
+## Windows sso-handoff：缓存并验证 OA + PDM
+
+如果使用 `npm.cmd run sso:start`，登录发生在系统 Edge User Data 下的专用 profile `MEGAntBot`。真机测试前应缓存并验证这个 profile 的 OA 和 PDM 登录态：
+
+```powershell
+$env:MEGANT_EDGE_PROFILE_NAME = "MEGAntBot"
+npm.cmd run profile:cache
+npm.cmd run oa:profile:test
+npm.cmd run pdm:profile:test
+npm.cmd run profile:test-login
+```
+
+`profile:cache` 只需执行一次；`oa:profile:test` 和 `pdm:profile:test` 分别验证两套登录态，`profile:test-login` 做总检查。

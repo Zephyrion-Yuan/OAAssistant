@@ -74,7 +74,7 @@
           <h2>WBS 主数据</h2>
           <span id="wbsBadge" class="badge neutral">未加载</span>
         </div>
-        <p>每个 WBS 编码绑定工厂 / 成本中心 / 采购人 / MRP / 默认库存地点等信息;编排层在填单前按 WBS 自动补全这些字段。仅本地业务主数据,不含任何登录凭据。</p>
+        <p>每个 WBS 编码绑定工厂 / 成本中心 / 采购人 / MRP / 默认库存地点 / 458 默认选项等信息;编排层在填单前按 WBS 自动补全这些字段。仅本地业务主数据,不含任何登录凭据。</p>
 
         <form id="wbsForm" class="wbsForm" autocomplete="off">
           <div class="wbsGrid">
@@ -87,6 +87,9 @@
             <label>默认库存地点名称<input name="stockLocationName" placeholder="实验室仓" /></label>
             <label>默认库存地点SAP码<input name="stockLocationSapCode" placeholder="H001" /></label>
             <label>需求日期偏移(天)<input name="demandDateOffsetDays" type="number" min="0" placeholder="5" /></label>
+            <label>是否为项目型<select name="projectType" data-options-group="oa458.projectType"></select></label>
+            <label>采购类型<select name="purchaseType" data-options-group="oa458.purchaseType"></select></label>
+            <label>附件需求类型<select name="purchaseDemandType" data-options-group="oa458.purchaseDemandType"></select></label>
             <label class="wbsWide">送货地址<input name="deliveryAddress" /></label>
             <label>状态
               <select name="status">
@@ -109,7 +112,7 @@
             <thead>
               <tr>
                 <th>WBS编码</th><th>项目定义</th><th>工厂</th><th>成本中心</th><th>采购人</th>
-                <th>MRP</th><th>库存地点</th><th>偏移</th><th>状态</th><th>操作</th>
+                <th>MRP</th><th>库存地点</th><th>458默认</th><th>偏移</th><th>状态</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="wbsTableBody"></tbody>

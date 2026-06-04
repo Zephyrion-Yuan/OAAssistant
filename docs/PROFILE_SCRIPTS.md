@@ -64,3 +64,22 @@ http://127.0.0.1:8787
 - 不抓取钉钉本地请求。
 - 不导出 Cookie/token/authCode/code。
 - Profile 缓存只保存在本机 `.runtime`。
+
+## Windows sso-handoff：同时缓存 OA + PDM
+
+当前 Windows 真机推荐使用 `MEGAntBot` 这个专用 Edge profile。OA 和 PDM 登录态都在同一个 profile 中，因此缓存只需要执行一次，但测试需要分别验证 OA 和 PDM。
+
+```powershell
+$env:MEGANT_EDGE_PROFILE_NAME = "MEGAntBot"
+npm.cmd run profile:cache
+npm.cmd run oa:profile:test
+npm.cmd run pdm:profile:test
+npm.cmd run profile:test-login
+```
+
+说明：
+
+- `profile:cache` 会缓存当前 `MEGANT_EDGE_PROFILE_NAME` 指向的整个 Edge profile。
+- `oa:profile:test` 只验证 cached profile 中的 OA 登录态。
+- `pdm:profile:test` 只验证 cached profile 中的 PDM 登录态。
+- `profile:test-login` 同时验证 OA 和 PDM cached profile 登录态。

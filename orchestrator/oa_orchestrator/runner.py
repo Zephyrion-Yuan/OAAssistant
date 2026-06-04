@@ -16,7 +16,7 @@ from langgraph.types import Command
 from .config import Settings, get_settings
 from .executors import get_executor
 from .graph import build_graph, make_checkpointer
-from .state import STATUS_NEEDS_INPUT, new_state
+from .state import STATUS_RUNNING, STATUS_NEEDS_INPUT, new_state
 
 
 def extract_interrupt(chunk: Dict[str, Any]) -> Optional[str]:
@@ -54,6 +54,7 @@ def run_workflow(
     user_id: Optional[str] = None,
     profile: Optional[Dict[str, Any]] = None,
     resume: Optional[Any] = None,
+    correction: Optional[str] = None,
     workflow_id: str = "89",
     mode: str = "single",
     executor=None,
@@ -65,6 +66,8 @@ def run_workflow(
 
     - fresh start: pass `request` (+ `excel_path`).
     - answer an ask: pass `resume=<answer>` with the same `thread_id`.
+    - correct a needs_input result: pass `correction=<answer>` with the same
+      `thread_id`; the graph patches the last structured input in place.
     - resume after crash: pass only `thread_id` (no request/resume).
     """
     if graph is None or settings is None:
@@ -75,6 +78,25 @@ def run_workflow(
 
     if resume is not None:
         payload: Any = Command(resume=resume)
+    elif correction is not None:
+        current = dict(graph.get_state(config).values or {})
+        if current:
+            current.update({
+                "thread_id": thread_id,
+                "correction": correction,
+                "status": STATUS_RUNNING,
+                "save": save if save is not None else current.get("save", False),
+                "mode": mode or current.get("mode", "single"),
+                "user_id": user_id or current.get("user_id"),
+                "profile": profile if profile is not None else current.get("profile"),
+            })
+            payload = current
+        else:
+            payload = new_state(
+                request=correction, excel_path=excel_path, thread_id=thread_id,
+                interactive=interactive, save=save, workflow_id=workflow_id,
+                user_id=user_id, profile=profile, mode=mode,
+            )
     elif request:
         payload = new_state(
             request=request, excel_path=excel_path, thread_id=thread_id,
@@ -104,6 +126,8 @@ def run_workflow(
         "requestId": result.get("requestId"),
         "requestUrl": result.get("requestUrl"),
         "pending_question": pending_question or final.get("pending_question"),
+        "pending_input": final.get("pending_input"),
+        "correction_summary": final.get("correction_summary") or [],
         "audit_path": final.get("audit_path"),
         "interrupted": pending_question is not None,
         "graph": graph,

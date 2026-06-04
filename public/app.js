@@ -96,11 +96,26 @@ const wbsForm = document.querySelector('#wbsForm');
 const wbsTableBody = document.querySelector('#wbsTableBody');
 const wbsOutput = document.querySelector('#wbsOutput');
 const wbsShowArchived = document.querySelector('#wbsShowArchived');
+let optionCatalog = { groups: {} };
 
 const WBS_COLUMNS = [
   'wbsCode', 'projectDefinition', 'demandFactoryCode', 'costCenter',
   'purchaser', 'mrpController'
 ];
+
+async function loadOptionCatalog() {
+  optionCatalog = await api('/api/options/catalog');
+  for (const select of wbsForm.querySelectorAll('select[data-options-group]')) {
+    const current = select.value;
+    const group = optionCatalog.groups?.[select.dataset.optionsGroup] || { options: [] };
+    const options = [new Option('使用目录默认', '')];
+    for (const item of group.options || []) options.push(new Option(item.label || item.value, item.value));
+    select.replaceChildren(...options);
+    select.value = current && Array.from(select.options).some((option) => option.value === current)
+      ? current
+      : (group.defaultValue || '');
+  }
+}
 
 function wbsFormData() {
   const data = {};
@@ -140,6 +155,9 @@ function renderWbsRow(record) {
   const location = document.createElement('td');
   location.textContent = [record.stockLocationName, record.stockLocationSapCode].filter(Boolean).join(' / ') || '-';
   row.appendChild(location);
+  const purchaseDefaults = document.createElement('td');
+  purchaseDefaults.textContent = [record.projectType, record.purchaseType, record.purchaseDemandType].filter(Boolean).join(' / ') || '-';
+  row.appendChild(purchaseDefaults);
   const offset = document.createElement('td');
   offset.textContent = record.demandDateOffsetDays ?? '-';
   row.appendChild(offset);
@@ -173,6 +191,7 @@ function renderWbsRow(record) {
 async function loadWbs() {
   const includeArchived = wbsShowArchived.checked ? '?includeArchived=1' : '';
   try {
+    await loadOptionCatalog();
     const result = await api(`/api/wbs/list${includeArchived}`);
     wbsTableBody.replaceChildren(...(result.records || []).map(renderWbsRow));
     setBadge(wbsBadge, 'ok', `${result.count} 条`);
@@ -202,6 +221,7 @@ wbsForm.addEventListener('submit', async (event) => {
 
 document.querySelector('#wbsReset').addEventListener('click', () => {
   wbsForm.reset();
+  loadOptionCatalog().catch(() => {});
 });
 document.querySelector('#wbsRefresh').addEventListener('click', loadWbs);
 wbsShowArchived.addEventListener('change', loadWbs);
