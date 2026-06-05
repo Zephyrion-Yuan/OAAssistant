@@ -56,12 +56,20 @@ class WbsEdit(BaseModel):
     stockLocationSapCode: str = ""
 
 
+class RouteOverride(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    materialCode: str = ""        # "" => all materials in the routing decision
+    action: str = ""              # "purchase" | "transfer"
+
+
 class CorrectionPatch(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     actionable: bool = False
     materialEdits: List[MaterialEdit] = Field(default_factory=list)
     wbsEdits: List[WbsEdit] = Field(default_factory=list)
+    routeOverrides: List[RouteOverride] = Field(default_factory=list)
     userDepartment: str = ""
     userReportsActionDone: bool = False   # user did an external action (logged in / fixed master data) and wants to continue
     summary: str = ""
@@ -85,7 +93,14 @@ _SYSTEM = (
     "wbsEdits=[{wbsCode:目标WBS, stockLocationSapCode 或 stockLocationName}]。\n"
     "- WBS 替换(如『WBS 改成 C2-0339001.01.01』): "
     "wbsEdits=[{wbsCode:旧WBS, newWbsCode:新WBS}]。\n"
+    "- WBS 可以用别称或项目名称(自然语言,如『传感器项目』『适配体项目』)指代,不一定是 C2- 开头的编码。"
+    "当 pending 在索要缺失/需要的 WBS(kind 含 wbs / transferInWbs / transferOutWbs)时,"
+    "把用户给出的任何 WBS 指代(编码或别称/项目名)放入 wbsEdits[].newWbsCode(target wbsCode 留空);"
+    "系统随后会用主数据把别称解析成真实编码。\n"
     "- 只填明确出现的字段;目标物料/WBS 只有一个候选时可以把对应编码留空。\n"
+    "- 路由选择(kind=routingChoice,即在其他项目仓发现库存、需在采购与转储间选择): "
+    "用户说『确认采购/就采购/走采购』→ routeOverrides=[{materialCode:'', action:'purchase'}](作用于全部待决物料); "
+    "用户说『<物料编码> 改走转储/改成转储/走转储』→ routeOverrides=[{materialCode:该物料, action:'transfer'}]。\n"
     "- 若用户表示已在外部系统完成了某项操作(如『已登录/已处理/WBS已改好/好了/弄好了』)"
     "且没有给出新的数据值, 设 userReportsActionDone=true(此时可不带任何 edits)。\n"
     "- 不要编造编码或数量。完全无法解析出任何修正且没有完成操作的表态时 actionable=false,"
@@ -316,6 +331,42 @@ def _wbs_replace_target(business: Dict[str, Any], pending: Dict[str, Any], edit:
     return ""
 
 
+def _blocked_bucket_codes(pending: Dict[str, Any]) -> set:
+    """materialCodes of the pending items that are actually missing a WBS (so a
+    supplied WBS fills the right bucket, not a sibling that already has one)."""
+    codes: set = set()
+    for item in _pending_items(pending):
+        item_wbs = str(item.get("wbsCode") or "").strip()
+        if item_wbs and not item.get("missingWbs"):
+            continue  # this item already has a WBS — not the blank one
+        for code in (item.get("materialCodes") or []):
+            if code:
+                codes.add(str(code))
+    return codes
+
+
+def _fill_blank_wbs(business: Dict[str, Any], pending: Dict[str, Any], value: str) -> int:
+    """Fill blank-WBS demand rows of the blocked bucket with `value`. Scoped by
+    the bucket's materialCodes when known so a sibling bucket's row isn't touched.
+    Returns rows filled (0 when there were no blank rows — i.e. it's a true
+    replace, handled by the caller)."""
+    rows = business.get("demandRows") or []
+    blanks = [r for r in rows if not str(r.get("wbsCode") or "").strip()]
+    if not blanks:
+        if not rows and not str(business.get("wbsCode") or "").strip():
+            business["wbsCode"] = value
+            return 1
+        return 0
+    codes = _blocked_bucket_codes(pending)
+    targets = [r for r in blanks if not codes or str(r.get("materialCode") or "") in codes]
+    if not targets:               # codes matched none of the blanks → fill all blanks (best effort)
+        targets = blanks
+    for row in targets:
+        row["wbsCode"] = value
+    _rebuild_material_plans(business)
+    return len(targets)
+
+
 def _material_codes(business: Dict[str, Any]) -> List[str]:
     seen: List[str] = []
     for source in (business.get("demandRows") or [], business.get("materialPlans") or []):
@@ -344,12 +395,12 @@ def _suggestion_for(pending: Dict[str, Any], code: str) -> Dict[str, Any]:
 
 
 def _apply_patch(
-    business: Dict[str, Any],
-    overrides: Dict[str, Dict[str, Any]],
-    pending: Dict[str, Any],
-    patch: CorrectionPatch,
-) -> List[str]:
-    notes: List[str] = []
+    business: Dict[str, Any], # 主业务数据，是一个字典，存放着当前业务相关信息（如物料、WBS等）
+    overrides: Dict[str, Dict[str, Any]], # 待修改的字段覆盖表，外层键是WBS编码，内层是字段名到值的映射
+    pending: Dict[str, Any], # 表示“待处理”状态的数据，通常包含缺失WBS的行或待处理的需求行信息
+    patch: CorrectionPatch, # 本次要应用的修正补丁对象，包含了物料编辑列表、WBS编辑列表等
+) -> List[str]: # 函数返回一个字符串列表，作为操作过程中的说明或警告（“笔记”）
+    notes: List[str] = [] # 初始化为空列表，用来收集所有需要记录的信息
 
     for edit in patch.materialEdits:
         code = (edit.materialCode or "").strip() or _single_material_target(business, pending)
@@ -380,8 +431,18 @@ def _apply_patch(
 
         targets: List[str] = []
         if new_wbs:
-            old_wbs = _wbs_replace_target(business, pending, edit)
-            notes.extend(_replace_wbs(business, old_wbs, new_wbs))
+            explicit_old = (edit.wbsCode or "").strip()
+            # Prefer FILLING the blocked bucket's blank rows (the missing-WBS
+            # case). Only fall back to replacing an existing WBS when the user
+            # named an old WBS or there are no blank rows to fill — this avoids
+            # clobbering a sibling row that already had a WBS (the repeat-ask bug).
+            filled = 0 if explicit_old else _fill_blank_wbs(business, pending, new_wbs)
+            if filled:
+                notes.append(f"缺失的 WBS 已改为 {new_wbs}，影响 {filled} 行")
+            else:
+                old_wbs = _wbs_replace_target(business, pending, edit)
+                replaced = _replace_wbs(business, old_wbs, new_wbs)
+                notes.extend(replaced or [f"未找到需要补/改 WBS 的需求行(value={new_wbs})"])
             targets = [new_wbs]
         elif loc_name or loc_sap:
             targets = _stock_location_targets(business, pending, edit)
@@ -551,6 +612,25 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
             profile["user_id"] = str(state.get("user_id") or "")
         notes.append(f"已更新用户部门 {department}")
         profile_updated = True
+
+    # routing decision (other-project stock): purchase(458) vs transfer(89)
+    routing_overrides = {str(k): str(v) for k, v in (state.get("routing_overrides") or {}).items()}
+    route_changed = False
+    if patch.routeOverrides:
+        rec_codes = [str(c) for c in (pending.get("materialCodes") or []) if c] \
+            or [str(it.get("materialCode")) for it in _pending_items(pending) if it.get("materialCode")]
+        for ro in patch.routeOverrides:
+            action = (ro.action or "").strip().lower()
+            if action not in {"purchase", "transfer"}:
+                continue
+            codes = [str(ro.materialCode).strip()] if (ro.materialCode or "").strip() else rec_codes
+            for code in codes:
+                if not code:
+                    continue
+                routing_overrides[code] = action
+                route_changed = True
+                notes.append(f"物料 {code} 路由已改为 {'项目间转储(89)' if action == 'transfer' else '采购(458)'}")
+
     applied = [note for note in notes if any(marker in note for marker in _APPLIED_MARKERS)]
 
     # "I've done it" — the user performed an external action (logged in / fixed
@@ -562,7 +642,7 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if action_done:
         notes = notes + ["用户确认已完成外部操作，重新校验并继续"]
 
-    did_something = bool(applied) or action_done
+    did_something = bool(applied) or action_done or route_changed
     history = append_history(state, {
         "node": "apply_corrections",
         "ok": did_something,
@@ -604,6 +684,8 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if applied:
         # only persist edited data; an action-done rerun keeps the existing input
         updates.update({"business_input": business, "wbs_overrides": overrides})
+    if route_changed:
+        updates["routing_overrides"] = routing_overrides
     if profile_updated:
         updates["profile"] = profile
     return updates

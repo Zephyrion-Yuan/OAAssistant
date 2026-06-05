@@ -79,15 +79,31 @@ def run(graph, *, excel, thread, save, mode="acquire", profile=None):
 
 
 def main() -> int:
-    # 0) pure allocation sanity (allocate() consumes the *classified* inventory
-    #    shape — locations carry isProjectStock, as the inventory_query node emits)
-    plan = allocate(
-        [{"materialCode": "M", "wbsCode": DEMAND_WBS, "quantity": "5"}],
-        {"M": {"locations": [{"wbsCode": SOURCE_WBS, "unrestrictedStock": "2", "isProjectStock": True}]}},
-    )
-    kinds = sorted(e.workflow_id for e in plan.entries)
-    assert kinds == ["458", "89"], kinds
-    print("PASS allocation sanity: 2@other-project -> 89, shortfall 3 -> 458")
+    # 0) pure allocation sanity — the confirmed routing table:
+    #    own-project -> 412 | public -> 89(公共→项目)+412 | other-project -> 建议458 | shortfall -> 458
+    own = allocate([{"materialCode": "M", "wbsCode": DEMAND_WBS, "quantity": "3"}],
+                   {"M": {"locations": [{"wbsCode": DEMAND_WBS, "unrestrictedStock": "5", "isProjectStock": True}]}})
+    assert sorted(e.workflow_id for e in own.entries) == ["412"], own.entries
+    pub = allocate([{"materialCode": "M", "wbsCode": DEMAND_WBS, "quantity": "4"}],
+                   {"M": {"locations": [{"unrestrictedStock": "10", "isProjectStock": False,
+                                         "stockLocationCode": "A001", "stockLocationName": "成品仓"}]}})
+    assert sorted(e.workflow_id for e in pub.entries) == ["412", "89"], pub.entries
+    e89 = next(e for e in pub.entries if e.workflow_id == "89")
+    assert e89.sourceKind == "public" and e89.transferOutStockLocationName == "成品仓" \
+        and e89.movementType == "普通库存转储至项目库存", e89
+    # other-project: recommend 458 (no auto-89), recorded as a recommendation
+    other = allocate([{"materialCode": "M", "wbsCode": DEMAND_WBS, "quantity": "5"}],
+                     {"M": {"locations": [{"wbsCode": SOURCE_WBS, "unrestrictedStock": "2", "isProjectStock": True}]}})
+    assert sorted(e.workflow_id for e in other.entries) == ["458"], other.entries
+    assert other.recommendations and other.recommendations[0]["materialCode"] == "M", other.recommendations
+    # ...unless the user overrides to transfer -> 89(项目→项目) + 458 shortfall
+    over = allocate([{"materialCode": "M", "wbsCode": DEMAND_WBS, "quantity": "5"}],
+                    {"M": {"locations": [{"wbsCode": SOURCE_WBS, "unrestrictedStock": "2", "isProjectStock": True}]}},
+                    routing_overrides={"M": "transfer"})
+    assert sorted(e.workflow_id for e in over.entries) == ["458", "89"], over.entries
+    e89o = next(e for e in over.entries if e.workflow_id == "89")
+    assert e89o.transferOutWbs == SOURCE_WBS and e89o.movementType == "项目库存转储至项目库存", e89o
+    print("PASS allocation: own→412 | public→89(公共→项目)+412 | other→建议458 | override→89(项目→项目)+458")
 
     # scenario inventory: 4000023659 public(10), 4000059295 other-project special(2)
     mockmod._INVENTORY = {
@@ -108,21 +124,23 @@ def main() -> int:
     assert result["router"] and result["ok"], result
     drafts = {d["workflow_id"]: d for d in result["drafts"]}
     assert set(drafts) == {"412", "89", "458"}, set(drafts)
-    # 412: outbound the public PCR板 x10 at the demand WBS
+    # 412: outbound the public PCR板 x10 (own-project 0 + transferred-in public 10)
     assert drafts["412"]["wbsCode"] == DEMAND_WBS
     assert drafts["412"]["materialLines"][0]["materialCode"] == "4000023659"
     assert drafts["412"]["materialLines"][0]["quantity"] == "10"
     entry412 = next(e for e in out["plan"]["entries"] if e["workflow_id"] == "412")
     assert entry412["request"]["userDepartment"] == "研发三组", entry412["request"]
-    # 89: transfer the 2 from the other project's WBS into the demand WBS
-    assert drafts["89"]["transferOutWbs"] == SOURCE_WBS
-    assert drafts["89"]["materialLines"][0]["materialCode"] == "4000059295"
-    assert drafts["89"]["materialLines"][0]["quantity"] == "2"
-    # 458: purchase the shortfall 3
+    # 89: move the public PCR板 x10 公共仓→项目仓 (no source WBS — public source location)
+    assert not drafts["89"]["transferOutWbs"], drafts["89"]
+    assert drafts["89"]["materialLines"][0]["materialCode"] == "4000023659"
+    assert drafts["89"]["materialLines"][0]["quantity"] == "10"
+    entry89 = next(e for e in out["plan"]["entries"] if e["workflow_id"] == "89")
+    assert entry89["request"]["movementType"] == "普通库存转储至项目库存", entry89["request"]
+    # 458: other-project stock found -> recommend purchasing all 5 (传感器)
     assert drafts["458"]["materialLines"][0]["materialCode"] == "4000059295"
-    assert drafts["458"]["materialLines"][0]["quantity"] == "3"
+    assert drafts["458"]["materialLines"][0]["quantity"] == "5"
     assert all(d["ok"] and d["requestId"] for d in drafts.values()), drafts
-    print("PASS 3-flow fan-out: 412(PCR板x10) + 89(传感器x2 from other WBS) + 458(传感器x3) all saved")
+    print("PASS 3-flow fan-out: 412(PCR板x10) + 89(公共→项目 PCR板x10) + 458(传感器x5, 其他项目仓建议采购) all saved")
 
     # 2) generated 458 attachment matches the real 22-column 项目需求填写界面 layout
     entry458 = next(e for e in out["plan"]["entries"] if e["workflow_id"] == "458")
@@ -137,8 +155,8 @@ def main() -> int:
     assert hdr[:6] == ["需求类型", "物料编码", "物料名称", "物料组", "需求数量", "基本计量单位"], hdr
     assert len(hdr) == 22, len(hdr)
     data = [c.value for c in aws[3]]
-    # 需求类型=02, 物料编码, 需求数量=3, 申请人(idx9), WBS(idx11), 工厂(idx16)
-    assert data[0] == "02" and data[1] == "4000059295" and str(data[4]) == "3", data
+    # 需求类型=02, 物料编码, 需求数量=5 (recommend purchasing all), 申请人(idx9), WBS(idx11), 工厂(idx16)
+    assert data[0] == "02" and data[1] == "4000059295" and str(data[4]) == "5", data
     assert data[2] == "传感器" and data[5] == "EA", data
     assert data[10] == "C2-0225002" and data[15] == "M01", data
     assert data[11] == DEMAND_WBS and data[16] == "1010", data
@@ -146,9 +164,9 @@ def main() -> int:
     assert data[18] == "苏州工业园区玲珑街88号" and data[19] == "紧急", data
     print("PASS 458 attachment matches real 22-col template:", att.name)
 
-    # 3) shortfall note recorded
-    assert any("缺口" in n for n in result["notes"]), result["notes"]
-    print("PASS shortfall note recorded:", result["notes"][0])
+    # 3) other-project recommendation note recorded (建议采购)
+    assert any("其他项目仓" in n and "建议走采购" in n for n in result["notes"]), result["notes"]
+    print("PASS other-project recommendation note recorded")
 
     # 3a) 412 requires user department for cost-center matching.
     missing_dept = run(graph, excel=make_workbook([
@@ -214,23 +232,21 @@ def main() -> int:
     assert out3.get("status") == STATUS_NEEDS_INPUT, out3.get("status")
     print("PASS missing-registry WBS -> 412 draft skipped (needsInput costCenter), others unaffected")
 
-    # 6) 89 missing source stock location -> needs_input says which side/WBS is missing
-    saved_source = dict(mockmod._WBS_REGISTRY[SOURCE_WBS])
+    # 6) 89 公共→项目 missing transfer-in stock location -> needs_input
+    saved_demand_loc = dict(mockmod._WBS_REGISTRY[DEMAND_WBS])
     try:
-        mockmod._WBS_REGISTRY[SOURCE_WBS] = {**saved_source, "stockLocationName": "", "stockLocationSapCode": ""}
-        mockmod._INVENTORY["4000059295"] = [_loc("1010", "D002", "设备零件仓", SOURCE_WBS, "2.000", "Q")]
+        mockmod._WBS_REGISTRY[DEMAND_WBS] = {**saved_demand_loc, "stockLocationName": "", "stockLocationSapCode": ""}
+        mockmod._INVENTORY["4000023659"] = [_loc("1010", "A001", "成品仓", "", "2.000", "")]  # public
         out_stock = run(graph, excel=make_workbook([
-            ["1010", DEMAND_WBS, "C2-0225002", "4000059295", "传感器", 2, "EA", "M01"],
-        ]), thread="router-89-missing-stock", save=True)
+            ["1010", DEMAND_WBS, "C2-0225002", "4000023659", "PCR板", 2, "EA", "M01"],
+        ]), thread="router-89pub-missing-stock", save=True)
         assert out_stock.get("status") == STATUS_NEEDS_INPUT, out_stock.get("status")
-        pending_stock = (out_stock.get("result") or {}).get("input") or {}
-        assert pending_stock.get("kind") == "stockLocation", pending_stock
-        assert pending_stock.get("transferOutWbs") == SOURCE_WBS, pending_stock
-        assert pending_stock.get("missingWbs") == [SOURCE_WBS], pending_stock
-        assert "转出 WBS" in pending_stock.get("question", ""), pending_stock
-        print("PASS 89 missing source stock location -> needs_input names transfer-out WBS")
+        d89 = next((d for d in out_stock["result"]["drafts"] if d["workflow_id"] == "89"), None)
+        assert d89 and d89["skipped"] and d89["needsInput"]["kind"] == "stockLocation", d89
+        print("PASS 89 公共→项目 missing transfer-in stock location -> needs_input")
     finally:
-        mockmod._WBS_REGISTRY[SOURCE_WBS] = saved_source
+        mockmod._WBS_REGISTRY[DEMAND_WBS] = saved_demand_loc
+        mockmod._INVENTORY["4000023659"] = [_loc("1010", "A001", "成品仓", "", "10.000", "")]
 
     # 7) return mode (classify_goal=return) -> 414 入库 draft bucketed by WBS, no stock fan-out
     _GOAL["value"] = "return"

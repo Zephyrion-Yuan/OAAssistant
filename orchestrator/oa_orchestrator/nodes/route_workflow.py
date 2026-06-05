@@ -1,16 +1,21 @@
 """route_workflow node — the inventory-driven WBS-fan-out allocator.
 
-Per demand row (material + WBS + quantity), allocate against that material's SAP
-inventory with priority 412 > 89 > 458:
+Per demand row (material + demand WBS + quantity), allocate against that
+material's SAP inventory by WHERE the stock physically is (confirmed policy):
 
-    a412 = min(Q, public + own-project stock at this WBS)   -> 412 outbound
-    a89  = min(remaining, other-project stock per source WBS) -> 89 transfer
-    a458 = remaining shortfall                              -> 458 purchase
+    own-project stock (Q @ demand WBS)  -> 412 出库
+    public-warehouse stock (SOBKZ blank) -> 89 转储(公共仓→项目仓) + 412 出库
+    other-project stock (Q @ another WBS) -> 建议 458 采购 (不自动转储;可对话改走 89)
+    shortfall (no stock)                 -> 458 采购
 
-A per-material stock pool is depleted across rows (two rows for the same
-material don't double-count stock). Allocations are then bucketed into drafts
-keyed by (flow, WBS) — 89 additionally by source WBS — so each AllocationEntry
-becomes exactly one OA draft. Pure + deterministic; no LLM, no executor.
+The public portion produces TWO drafts: a 89 transfer (普通库存转储至项目库存) moving
+it from the public warehouse into the demand project's warehouse, plus the 412
+outbound. Other-project stock is NOT auto-transferred — a recommendation note is
+surfaced and the user can override per material via the dialogue (routing_overrides
+{material: "transfer"}) which then routes it to a project→project 89.
+
+A per-material stock pool is depleted across rows. Pure + deterministic; the LLM
+only participates by interpreting the override reply (in apply_corrections).
 """
 from __future__ import annotations
 
@@ -19,6 +24,9 @@ from typing import Any, Dict, List
 
 from ..schemas import AllocationEntry, AllocationPlan, MaterialLine
 from ._common import append_history
+
+MOVEMENT_PUBLIC_TO_PROJECT = "普通库存转储至项目库存"   # public warehouse -> project stock
+MOVEMENT_PROJECT_TO_PROJECT = "项目库存转储至项目库存"  # another project -> this project
 
 
 def _dec(value: Any) -> Decimal:
@@ -36,10 +44,14 @@ def _fmt(value: Decimal) -> str:
 
 
 def _build_pools(inventory: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """material -> {public: Decimal, project: {wbs: Decimal}} from classify_inventory."""
+    """material -> {public: [{code,name,qty}], project: {wbs: qty}}.
+
+    Public locations are kept individually (not summed) because a public→project
+    89 transfer needs the *source warehouse location* — which has no WBS and is
+    lost if we only keep the aggregate."""
     pools: Dict[str, Dict[str, Any]] = {}
     for material, inv in (inventory or {}).items():
-        public = Decimal("0")
+        public: List[Dict[str, Any]] = []
         project: Dict[str, Decimal] = {}
         for loc in (inv or {}).get("locations", []) or []:
             qty = _dec(loc.get("unrestrictedStock"))
@@ -49,7 +61,11 @@ def _build_pools(inventory: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 wbs = str(loc.get("wbsCode") or "")
                 project[wbs] = project.get(wbs, Decimal("0")) + qty
             else:
-                public += qty
+                public.append({
+                    "code": str(loc.get("stockLocationCode") or ""),
+                    "name": str(loc.get("stockLocationName") or ""),
+                    "qty": qty,
+                })
         pools[material] = {"public": public, "project": project}
     return pools
 
@@ -65,15 +81,25 @@ def _add_line(bucket: Dict[str, Any], material: str, name: str, qty: Decimal, un
     line["qty"] += qty
 
 
-def allocate(demand_rows: List[Dict[str, Any]], inventory: Dict[str, Any]) -> AllocationPlan:
+def allocate(demand_rows: List[Dict[str, Any]], inventory: Dict[str, Any],
+             routing_overrides: Dict[str, str] | None = None) -> AllocationPlan:
     pools = _build_pools(inventory)
+    overrides = {str(k): str(v) for k, v in (routing_overrides or {}).items()}
     buckets: Dict[tuple, Dict[str, Any]] = {}
     notes: List[str] = []
+    recommendations: List[Dict[str, Any]] = []   # other-project stock awaiting a purchase/transfer decision
 
-    def bucket(key: tuple, workflow_id: str, wbs: str, src_wbs: str | None = None) -> Dict[str, Any]:
+    def bucket(key: tuple, workflow_id: str, wbs: str, *, src_wbs: str | None = None,
+               movement: str | None = None, source_kind: str | None = None,
+               out_loc: Dict[str, Any] | None = None) -> Dict[str, Any]:
         if key not in buckets:
-            buckets[key] = {"workflow_id": workflow_id, "wbsCode": wbs,
-                            "transferOutWbs": src_wbs, "lines": {}, "meta": None}
+            buckets[key] = {
+                "workflow_id": workflow_id, "wbsCode": wbs, "transferOutWbs": src_wbs,
+                "movementType": movement, "sourceKind": source_kind,
+                "transferOutStockLocationName": (out_loc or {}).get("name"),
+                "transferOutStockLocationSapCode": (out_loc or {}).get("code"),
+                "lines": {}, "meta": None,
+            }
         return buckets[key]
 
     for row in demand_rows or []:
@@ -87,36 +113,74 @@ def allocate(demand_rows: List[Dict[str, Any]], inventory: Dict[str, Any]) -> Al
                 "mrpController": str(row.get("mrpController") or "")}
         name = str(row.get("materialName") or "")
         unit = str(row.get("unit") or "")
-        pool = pools.setdefault(material, {"public": Decimal("0"), "project": {}})
+        pool = pools.setdefault(material, {"public": [], "project": {}})
 
-        # 412: own-project stock at this WBS + public warehouse
+        # 1) own-project stock @ this WBS -> 412 出库 directly
         own = pool["project"].get(wbs, Decimal("0"))
-        a412 = min(need, own + pool["public"])
-        take_own = min(a412, own)
-        pool["project"][wbs] = own - take_own
-        pool["public"] -= (a412 - take_own)
-        if a412 > 0:
-            _add_line(bucket(("412", wbs), "412", wbs), material, name, a412, unit, meta)
-        remaining = need - a412
+        a_own = min(need, own)
+        pool["project"][wbs] = own - a_own
+        out_412 = a_own
+        remaining = need - a_own
 
-        # 89: other projects' special stock, largest source first; one draft per source WBS
+        # 2) public-warehouse stock -> 89(公共→项目) per source location + 412 出库
+        for loc in pool["public"]:
+            if remaining <= 0:
+                break
+            take = min(remaining, loc["qty"])
+            if take <= 0:
+                continue
+            loc["qty"] -= take
+            remaining -= take
+            out_412 += take
+            _add_line(
+                bucket(("89pub", wbs, loc["code"] or loc["name"]), "89", wbs,
+                       movement=MOVEMENT_PUBLIC_TO_PROJECT, source_kind="public", out_loc=loc),
+                material, name, take, unit, meta)
+            notes.append(f"{material} @ {wbs or '(无WBS)'}: 公共仓 {loc['name'] or loc['code']} {_fmt(take)} → 89 转储(公共→项目) 后 412 出库")
+
+        # the merged 412 outbound (own-project + transferred-in public)
+        if out_412 > 0:
+            _add_line(bucket(("412", wbs), "412", wbs), material, name, out_412, unit, meta)
+
+        # 3) other-project stock -> recommend 458 (don't auto-89); user can override
         others = sorted(
             [(w, q) for w, q in pool["project"].items() if w != wbs and q > 0],
             key=lambda kv: kv[1], reverse=True,
         )
-        for src_wbs, avail in others:
-            if remaining <= 0:
-                break
-            a89 = min(remaining, avail)
-            pool["project"][src_wbs] = avail - a89
-            remaining -= a89
-            if a89 > 0:
-                _add_line(bucket(("89", wbs, src_wbs), "89", wbs, src_wbs), material, name, a89, unit, meta)
+        other_total = sum((q for _, q in others), Decimal("0"))
+        if remaining > 0 and other_total > 0:
+            if overrides.get(material) == "transfer":
+                for src_wbs, avail in others:
+                    if remaining <= 0:
+                        break
+                    a89 = min(remaining, avail)
+                    pool["project"][src_wbs] = avail - a89
+                    remaining -= a89
+                    if a89 > 0:
+                        _add_line(
+                            bucket(("89", wbs, src_wbs), "89", wbs, src_wbs=src_wbs,
+                                   movement=MOVEMENT_PROJECT_TO_PROJECT, source_kind="project"),
+                            material, name, a89, unit, meta)
+                        notes.append(f"{material} @ {wbs or '(无WBS)'}: 已按你的选择从项目仓 {src_wbs} 转储 {_fmt(a89)}(89 项目→项目)")
+            elif overrides.get(material) == "purchase":
+                pass  # user already confirmed purchase for this material — proceed to 458 silently
+            else:
+                coverable = min(remaining, other_total)
+                src_text = "、".join(f"{w}({_fmt(q)})" for w, q in others)
+                notes.append(
+                    f"{material} @ {wbs or '(无WBS)'}: 在其他项目仓 {src_text} 发现库存 {_fmt(coverable)}，"
+                    f"按建议走采购(458)。如要改为项目间转储，回复『{material} 改走转储』。")
+                recommendations.append({
+                    "materialCode": material, "wbsCode": wbs,
+                    "otherSources": [{"wbsCode": w, "qty": _fmt(q)} for w, q in others],
+                    "coverable": _fmt(coverable), "default": "purchase",
+                })
 
-        # 458: purchase the shortfall
+        # 4) shortfall (incl. the other-project amount we recommend purchasing) -> 458
         if remaining > 0:
             _add_line(bucket(("458", wbs), "458", wbs), material, name, remaining, unit, meta)
-            notes.append(f"{material} @ {wbs or '(无WBS)'}: 缺口 {_fmt(remaining)} → 458 采购")
+            if not (other_total > 0 and overrides.get(material) != "transfer"):
+                notes.append(f"{material} @ {wbs or '(无WBS)'}: 缺口 {_fmt(remaining)} → 458 采购")
 
     entries: List[AllocationEntry] = []
     for b in buckets.values():
@@ -127,6 +191,10 @@ def allocate(demand_rows: List[Dict[str, Any]], inventory: Dict[str, Any]) -> Al
             workflow_id=b["workflow_id"],
             wbsCode=b["wbsCode"],
             transferOutWbs=b.get("transferOutWbs"),
+            movementType=b.get("movementType"),
+            sourceKind=b.get("sourceKind"),
+            transferOutStockLocationName=b.get("transferOutStockLocationName"),
+            transferOutStockLocationSapCode=b.get("transferOutStockLocationSapCode"),
             demandFactoryCode=meta.get("demandFactoryCode", ""),
             projectDefinition=meta.get("projectDefinition", ""),
             mrpController=meta.get("mrpController", ""),
@@ -135,7 +203,7 @@ def allocate(demand_rows: List[Dict[str, Any]], inventory: Dict[str, Any]) -> Al
 
     order = {"412": 0, "89": 1, "458": 2}
     entries.sort(key=lambda e: (order.get(e.workflow_id, 9), e.wbsCode, e.transferOutWbs or ""))
-    return AllocationPlan(entries=entries, notes=notes)
+    return AllocationPlan(entries=entries, notes=notes, recommendations=recommendations)
 
 
 def allocate_return(demand_rows: List[Dict[str, Any]]) -> AllocationPlan:
@@ -177,16 +245,22 @@ def route_workflow_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if state.get("goal") == "return":
         plan = allocate_return(demand_rows)
     else:
-        plan = allocate(demand_rows, state.get("inventory") or {})
+        plan = allocate(demand_rows, state.get("inventory") or {},
+                        routing_overrides=state.get("routing_overrides") or {})
 
     summary = {wf: 0 for wf in ("412", "89", "458")}
     for entry in plan.entries:
         summary[entry.workflow_id] = summary.get(entry.workflow_id, 0) + 1
     history = append_history(state, {"node": "route_workflow", "ok": True,
                                      "draftCount": len(plan.entries), "byFlow": summary,
-                                     "notes": len(plan.notes)})
+                                     "notes": len(plan.notes), "recommendations": len(plan.recommendations)})
     if not plan.entries:
         return {"plan": plan.model_dump(),
                 "result": {"ok": False, "error": "路由未产出任何草稿(无需求行或无可分配量)。"},
                 "history": history}
+
+    # Other-project stock: per the confirmed policy we PROCEED with 458 by default
+    # and surface a recommendation (in plan.notes). We do NOT park — the LLM still
+    # participates by interpreting a『<物料> 改走转储』override (apply_corrections
+    # → routing_overrides), which re-routes that portion to a project→project 89.
     return {"plan": plan.model_dump(), "history": history}

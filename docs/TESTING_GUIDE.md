@@ -22,6 +22,7 @@ cp orchestrator/.env.example orchestrator/.env
 # 然后编辑 orchestrator/.env,填入:
 #   DEEPSEEK_API_KEY=sk-...
 #   DEEPSEEK_MODEL=deepseek-v4-pro
+#   DEEPSEEK_TOOL_MODEL=deepseek-chat   # P1 ReAct 下单 agent 用(thinking 模型不支持强制 tool_choice;agent 层走 deepseek-chat)
 ```
 
 > 验证 venv:`orchestrator/.venv/bin/python -c "import fastapi, langgraph, openpyxl; print('ok')"`
@@ -38,16 +39,21 @@ npm run check
 
 # 编排层离线套件(逐个跑,各 <1s)
 cd orchestrator
-for t in smoke stage2 stage3 chat_demo inventory wbs router idempotency assist bff; do
+for t in smoke stage2 stage3 chat_demo inventory wbs router idempotency assist memory adaptive bff; do
   .venv/bin/python tests/$t.py && echo "  ↑ $t PASS" || echo "  ↑ $t FAIL"
 done
 ```
 
-**期望**:`npm run check` 无输出即通过;10 个测试都打印 `ALL … PASSED`。
-- `router.py` 覆盖:三流 fan-out(412/89/458)、22 列 458 附件、WBS 分桶、缺口 note、PDM 拦截、缺 registry 跳过、归还 414、单位误用、**别称解析**。
-- `idempotency.py` 覆盖:save 模式纠错重跑**不重复保存**已成功的草稿桶(按内容稳定 bucket key 复用)、内容变更使复用失效、dry-run 永不复用。
-- `assist.py` 覆盖:登录/wbsAutofill→**操作引导**、结构化 needs_input 保留 kind/items、残差硬错→人工转交、瞬时错→有界自动重试、用户回复「已处理」→清状态重跑校验。
-- `bff.py` 覆盖:health、画像往返、chat SSE 出草稿、needs_input、**LLM 纠错续跑同线程**。
+**期望**:`npm run check` 无输出即通过;12 个测试都打印 `ALL … PASSED`。
+- `adaptive.py`(P3)覆盖:物料码查无→**按名称自适应重查**、唯一匹配自动改码(plans+rows 同步)、无名兜底仍走 material 闸。
+- `bff.py` 还覆盖 **P1 ReAct 下单**:`/api/agent-chat` 模糊请求→追问、明确请求→demand+草稿(离线用 `set_intake_runner` 桩;真机用 deepseek-chat 跑 agent)。
+- `router.py` 覆盖**库存路由表**:自有项目仓→412 | 公共仓→**89(公共→项目)+412** | 其他项目仓→**建议 458**(可对话『改走转储』改 89) | 缺口→458;外加 22 列 458 附件、WBS 分桶、PDM 拦截、缺 registry 跳过、归还 414、单位误用、别称解析、公共→项目 89 缺库存地点。
+- `idempotency.py` 覆盖:save 模式纠错重跑**不重复保存**已成功的草稿桶、内容变更使复用失效、dry-run 永不复用。
+- `assist.py` 覆盖:登录/wbsAutofill→操作引导、结构化 needs_input 保留 kind/items、残差→人工转交、瞬时→有界重试、「已处理」→重跑校验、**缺失 WBS 只补空桶不误改兄弟桶**、**『改走转储』路由覆盖**。
+- `memory.py` 覆盖(④⑤ 脚手架,接口态):NullMemory 休眠、MockMemory ingest/retrieve/summarize、`recall_context`、**412 出库→414 入库退料反向派生**。
+- `bff.py` 覆盖:health、画像往返、chat SSE 出草稿、needs_input、LLM 纠错续跑同线程。
+
+> ⚠ 真机待验证:**公共仓→项目仓 89 转储**(移动类型『普通库存转储至项目库存』、来源为公共仓库存地点、无来源 WBS)。编排层产出的结构化请求已就绪并测过;Node「手」层的 89 填单脚本是否支持该移动类型/公共来源,需在真机 dry-run 核对。
 
 ---
 
@@ -77,7 +83,9 @@ cd frontend && python3 -m http.server 5500
    - (mock 库存里 4000059295=项目库存 Q、4000023659=公共仓;别称/cost center 走你刚存的这条。)
 2. **配置抽屉 → 用户设置**(可选):填画像默认值,保存。
 3. **配置抽屉 → 初始化**:mock 模式可跳过(无需登录)。关掉抽屉。
-4. **右侧采购需求表**:默认两行(WBS 写**别称**「传感器项目」试解析),或自己填。保持「保存草稿」**不勾**(dry-run)。点 **「发起申请 ▸」**。
+4. 两种下单方式任选:
+   - **AI 下单(P1,左侧 chat 顶部默认开启)**:直接一句话,如「采购5个PCR板，WBS传感器项目，工厂1010」。助手(deepseek-chat ReAct)会自己查 PDM、解析 WBS 别称、缺信息<b>追问</b>,凑齐后填入右侧并分流。需 `DEEPSEEK_TOOL_MODEL=deepseek-chat`。
+   - **右侧采购需求表**:手填需求行(WBS 写**别称**「传感器项目」试解析),保持「保存草稿」**不勾**(dry-run),点 **「发起申请 ▸」**。
 
 ### 2.3 期望(左侧对话)
 - 用户气泡 → 助手气泡里 **运行轨迹 chips** 实时生长:读取需求 → 解析WBS别称 → 识别意图 → 校验物料 → 单位校验 → 查库存 → 分配路由 → 补全+生成附件 → 填单(草稿) → 汇总。

@@ -285,7 +285,11 @@ class AllocationEntry(BaseModel):
 
     workflow_id: str                         # "412" | "89" | "458"
     wbsCode: str = ""                        # demand WBS (the draft / bucket key)
-    transferOutWbs: Optional[str] = None     # 89 only: source project WBS
+    transferOutWbs: Optional[str] = None     # 89 project→project: source project WBS
+    movementType: Optional[str] = None       # 89: explicit movement type (公共→项目 vs 项目→项目)
+    sourceKind: Optional[str] = None         # 89: "public" | "project"
+    transferOutStockLocationName: Optional[str] = None   # 89 公共→项目: public source location (no WBS)
+    transferOutStockLocationSapCode: Optional[str] = None
     demandFactoryCode: str = ""
     projectDefinition: str = ""
     mrpController: str = ""
@@ -303,6 +307,7 @@ class AllocationPlan(BaseModel):
 
     entries: List[AllocationEntry] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+    recommendations: List[Dict[str, Any]] = Field(default_factory=list)  # other-project stock: purchase/transfer decisions
 
 
 # --------------------------------------------------------------------------- #

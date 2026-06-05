@@ -36,6 +36,8 @@ from . import store
 from .config import get_settings
 from .executors.http_node import HttpNodeExecutor
 from .executors.mock import MockExecutor
+from .agent import build_intake_agent
+from .agent import run_intake as _run_intake_impl
 from .runner import build_runtime, run_workflow
 from .schemas import BusinessInput, DemandRow, MaterialPlan, Profile
 
@@ -85,6 +87,26 @@ def _runtime(executor_key: str):
         executor = MockWithRealWbs(NODE) if executor_key == "mock" else HttpNodeExecutor(NODE)
         _runtimes[executor_key] = build_runtime(executor=executor, settings=settings, mode="acquire")
     return _runtimes[executor_key]
+
+
+# P1 ReAct intake agent — one per executor, with its own checkpointer for
+# multi-turn clarification. Lazily built (needs a tool-calling DeepSeek key).
+_intake_agents: Dict[str, Any] = {}
+# Test seam: offline tests inject a fake intake runner (the real one needs a
+# tool-calling LLM). Defaults to the real agent run.
+_intake_runner = _run_intake_impl
+
+
+def set_intake_runner(fn) -> None:
+    global _intake_runner
+    _intake_runner = fn
+
+
+def _intake_agent(executor_key: str, executor, rt_settings):
+    if executor_key not in _intake_agents:
+        from langgraph.checkpoint.memory import MemorySaver
+        _intake_agents[executor_key] = build_intake_agent(executor, rt_settings, checkpointer=MemorySaver())
+    return _intake_agents[executor_key]
 
 
 # --------------------------------------------------------------------------- #
@@ -237,6 +259,39 @@ def _summarize(delta: Any) -> str:
     return ", ".join(bits) or "(history)"
 
 
+def _emit_acquire(events, thread_id, *, request=None, correction=None, save, profile,
+                  graph, executor, rt_settings):
+    """Run the acquire graph and push node/needs_input/final SSE events. Shared by
+    /api/chat (form-driven) and /api/agent-chat (the ReAct agent assembled the demand)."""
+    def on_update(chunk: Dict[str, Any]) -> None:
+        for node, delta in chunk.items():
+            if node == "__interrupt__":
+                continue
+            events.put(_sse("node", node=node, summary=_summarize(delta)))
+    kwargs = {"thread_id": thread_id, "save": save, "mode": "acquire", "profile": profile,
+              "graph": graph, "executor": executor, "settings": rt_settings, "on_update": on_update}
+    if correction is not None:
+        kwargs["correction"] = correction
+    else:
+        kwargs["request"] = request or "采购申请"
+    res = run_workflow(**kwargs)
+    result = res.get("result") or {}
+    if result.get("needsInput") or res.get("status") == "needs_input":
+        inp = result.get("input") or res.get("pending_input") or {}
+        events.put(_sse("needs_input", threadId=thread_id, status=res.get("status"),
+                        kind=inp.get("kind"), question=inp.get("question") or "需要补充输入",
+                        resumeMode=inp.get("resumeMode"), category=inp.get("category"),
+                        detail=inp, drafts=result.get("drafts") or [],
+                        correctionSummary=res.get("correction_summary") or []))
+    else:
+        events.put(_sse("final", threadId=thread_id, status=res.get("status"),
+                        ok=result.get("ok"), drafts=result.get("drafts") or [],
+                        notes=result.get("notes") or [],
+                        correctionSummary=res.get("correction_summary") or [],
+                        auditPath=res.get("audit_path")))
+    return res
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     executor_key = "http-node" if req.executor == "http-node" else "mock"
@@ -256,43 +311,12 @@ async def chat(req: ChatRequest):
     sentinel = object()
 
     def worker():
-        def on_update(chunk: Dict[str, Any]) -> None:
-            for node, delta in chunk.items():
-                if node == "__interrupt__":
-                    continue
-                events.put(_sse("node", node=node, summary=_summarize(delta)))
         try:
-            kwargs = {
-                "thread_id": thread_id,
-                "save": req.save,
-                "mode": "acquire",
-                "profile": profile,
-                "graph": graph,
-                "executor": executor,
-                "settings": rt_settings,
-                "on_update": on_update,
-            }
-            if continuation:
-                kwargs["correction"] = req.message
-            else:
-                kwargs["request"] = req.message or "采购申请"
-            res = run_workflow(
-                **kwargs,
-            )
-            result = res.get("result") or {}
-            if result.get("needsInput") or res.get("status") == "needs_input":
-                inp = result.get("input") or res.get("pending_input") or {}
-                events.put(_sse("needs_input", threadId=thread_id, status=res.get("status"),
-                                kind=inp.get("kind"), question=inp.get("question") or "需要补充输入",
-                                resumeMode=inp.get("resumeMode"), category=inp.get("category"),
-                                detail=inp, drafts=result.get("drafts") or [],
-                                correctionSummary=res.get("correction_summary") or []))
-            else:
-                events.put(_sse("final", threadId=thread_id, status=res.get("status"),
-                                ok=result.get("ok"), drafts=result.get("drafts") or [],
-                                notes=result.get("notes") or [],
-                                correctionSummary=res.get("correction_summary") or [],
-                                auditPath=res.get("audit_path")))
+            _emit_acquire(events, thread_id,
+                          request=(None if continuation else (req.message or "采购申请")),
+                          correction=(req.message if continuation else None),
+                          save=req.save, profile=profile, graph=graph,
+                          executor=executor, rt_settings=rt_settings)
         except Exception as exc:  # noqa: BLE001
             events.put(_sse("error", error=str(exc)))
         finally:
@@ -302,6 +326,73 @@ async def chat(req: ChatRequest):
 
     async def stream():
         yield _sse("start", threadId=thread_id, executor=executor_key, continuation=continuation)
+        while True:
+            item = await asyncio.to_thread(events.get)
+            if item is sentinel:
+                break
+            yield item
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    threadId: Optional[str] = None
+    save: bool = False
+    executor: str = "mock"
+    userId: Optional[str] = None
+
+
+@app.post("/api/agent-chat")
+async def agent_chat(req: AgentChatRequest):
+    """P1 — the ReAct intake agent drives the left chat. Free natural language →
+    the agent clarifies / queries read-only tools / assembles demandRows → hands
+    off to the deterministic acquire graph (save=false by default). Multi-turn:
+    reuse the same threadId so the agent remembers the conversation."""
+    executor_key = "http-node" if req.executor == "http-node" else "mock"
+    rt_settings, executor, graph = _runtime(executor_key)
+    thread_id = req.threadId or f"agent-{uuid.uuid4().hex[:8]}"
+
+    profile = None
+    if req.userId:
+        stored = store.get_profile(settings.store_path, req.userId)
+        profile = stored.model_dump() if stored else None
+
+    events: "queue.Queue" = queue.Queue()
+    sentinel = object()
+
+    def worker():
+        try:
+            try:
+                agent = _intake_agent(executor_key, executor, rt_settings)
+            except Exception:  # noqa: BLE001 — no key (offline/stubbed runner doesn't need it)
+                agent = None
+            intake = _intake_runner(agent, req.message, thread_id)
+            if intake.get("status") != "ready":
+                events.put(_sse("clarify", threadId=thread_id,
+                                question=intake.get("question") or "请补充更多信息后继续。"))
+                return
+            rows = intake.get("demandRows") or []
+            events.put(_sse("demand", threadId=thread_id, goal=intake.get("goal", "acquire"),
+                            demandRows=rows, reply=intake.get("reply", "")))
+            if not rows:
+                events.put(_sse("clarify", threadId=thread_id,
+                                question="未能从描述中组装出需求行，请补充物料 / 数量 / WBS。"))
+                return
+            store.save_business_input(settings.store_path, thread_id,
+                                      _business_from_demand_rows(rows), None)
+            _emit_acquire(events, thread_id, request=req.message, save=req.save,
+                          profile=profile, graph=graph, executor=executor, rt_settings=rt_settings)
+        except Exception as exc:  # noqa: BLE001
+            events.put(_sse("error", error=str(exc)))
+        finally:
+            events.put(sentinel)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    async def stream():
+        yield _sse("start", threadId=thread_id, executor=executor_key, mode="agent")
         while True:
             item = await asyncio.to_thread(events.get)
             if item is sentinel:

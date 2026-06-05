@@ -32,7 +32,9 @@ input,select{font:inherit;border:1px solid var(--line);border-radius:8px;min-hei
 .workspace{flex:1 1 auto;display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;min-height:720px}
 .pane{background:var(--card);border:1px solid var(--line);border-radius:14px;min-height:0;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 1px 3px rgba(20,30,60,.04)}
 .pane.left{padding:0}
+.chathead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);flex:0 0 auto;background:#fff}
 deep-chat{width:100% !important;height:100% !important}
+.pane.left deep-chat{height:auto !important;flex:1 1 auto;min-height:0}
 
 /* right pane: request builder */
 .pane.right{padding:16px;overflow:hidden}

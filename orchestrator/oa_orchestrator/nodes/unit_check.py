@@ -36,11 +36,18 @@ class UnitJudgment(BaseModel):
 
 
 def _llm_judge(settings, item: Dict[str, Any]) -> UnitJudgment:
+    import json
+    # Hand the model the FULL PDM record (all fields) — the packaging spec may be
+    # absent from 规格型号 or live in a differently-named field; let the LLM find it.
+    pdm_fields = item.get("pdmFields") or {}
     user = (
         f"物料编码: {item.get('materialCode')}\n物料名称: {item.get('materialName')}\n"
         f"需求单位: {item.get('demandUnit')}\n需求数量: {item.get('demandQuantity')}\n"
         f"PDM基本计量单位: {item.get('baseUnit')}\n规格型号/包装: {item.get('specificationModel')}\n"
-        "请判断需求单位是否与基本计量单位等价(consistent),若不等价给出建议单位与换算后数量。"
+        f"PDM 全部字段(JSON,包装规格可能在其中任意字段或缺失):\n"
+        f"{json.dumps(pdm_fields, ensure_ascii=False)}\n"
+        "请综合以上所有字段判断需求单位是否与基本计量单位等价(consistent),"
+        "若不等价给出建议单位与换算后数量。"
     )
     return require_structured(settings, UnitJudgment, _SYSTEM, user)
 
@@ -69,6 +76,7 @@ def unit_check_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "demandQuantity": plan.get("quantity"),
             "baseUnit": base_unit,
             "specificationModel": base.get("specificationModel"),
+            "pdmFields": base.get("fields") or {},
         }
         judgment = _llm_judge(settings, item)
         if judgment.consistent:

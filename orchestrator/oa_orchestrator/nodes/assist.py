@@ -54,6 +54,7 @@ _KIND_TRIAGE = {
     "transferInStockLocation": ("input", RESUME_MIXED),
     "attachment": ("input", RESUME_CORRECT),
     "wbsAutofill": ("action", RESUME_ACTION),            # go check the WBS / project type in OA
+    "routingChoice": ("input", RESUME_CORRECT),          # purchase(458) vs transfer(89) decision
     "draftReview": ("input", RESUME_MIXED),
     "prepareError": ("input", RESUME_MIXED),
     "login": ("login", RESUME_ACTION),

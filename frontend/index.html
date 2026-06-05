@@ -29,6 +29,12 @@
   <main class="workspace">
     <!-- LEFT: conversation -->
     <section class="pane left">
+      <div class="chathead">
+        <span class="muted small">对话</span>
+        <label class="chk" title="开启后,直接用自然语言下单(助手会查 PDM/库存、追问、组装需求);关闭则用右侧表单">
+          <input type="checkbox" v-model="agentMode" /> AI 下单<span class="muted">(自然语言)</span>
+        </label>
+      </div>
       <deep-chat ref="dc"></deep-chat>
     </section>
 

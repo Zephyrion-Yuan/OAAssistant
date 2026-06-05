@@ -268,6 +268,41 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                                 "missingWbs": [""],
                             },
                         )
+                    elif entry.get("sourceKind") == "public":
+                        # 公共仓 → 项目仓 转储: source is a public warehouse location
+                        # (no WBS, carried on the entry by route_workflow); transfer-in
+                        # location comes from the demand WBS registry.
+                        in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
+                        out_name = entry.get("transferOutStockLocationName")
+                        out_sap = entry.get("transferOutStockLocationSapCode")
+                        if not (in_name or in_sap):
+                            entry = _skip(
+                                entry, "stockLocation",
+                                (f"流程 89 公共仓→项目仓转储卡住：转入/需求 WBS {wbs_code} 未维护默认库存地点。"
+                                 f"涉及物料：{_material_text(entry)}。请在配置 -> WBS 管理中维护该 WBS 的"
+                                 "默认库存地点名称或 SAP 编码，或直接回复“"
+                                 f"{wbs_code} 库存地点 D002”。"),
+                                {"transferInWbs": wbs_code, "missingStockLocationSides": ["in"], "missingWbs": [wbs_code]},
+                            )
+                        elif not (out_name or out_sap):
+                            entry = _skip(
+                                entry, "stockLocation",
+                                (f"流程 89 公共仓→项目仓转储缺少公共仓来源库存地点。涉及物料：{_material_text(entry)}。"),
+                                {"transferInWbs": wbs_code, "missingStockLocationSides": ["out"]},
+                            )
+                        else:
+                            structured = {
+                                "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
+                                "demandFactoryCode": factory, "mrpController": mrp,
+                                "materialPlans": _transfer_plans(entry),
+                            }
+                            entry["request"] = FillRequest(
+                                structured=structured, save=save,
+                                movementType=entry.get("movementType") or "普通库存转储至项目库存",
+                                factoryCode=factory, transferInWbs=wbs_code,
+                                transferOutStockLocationName=out_name, transferOutStockLocationSapCode=out_sap,
+                                transferInStockLocationName=in_name, transferInStockLocationSapCode=in_sap,
+                            ).model_dump(exclude_none=True)
                     elif not transfer_out_wbs:
                         entry = _skip(
                             entry,

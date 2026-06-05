@@ -32,6 +32,7 @@ class Settings:
     oa_platform: str
     deepseek_api_key: str
     deepseek_model: str
+    deepseek_tool_model: str    # tool-calling agent layer (P1/P2) — must support function calling
     deepseek_base_url: str
     max_retries: int
     runtime_dir: Path
@@ -57,6 +58,7 @@ def get_settings() -> Settings:
         oa_platform=os.getenv("OA_PLATFORM", "mac"),
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        deepseek_tool_model=os.getenv("DEEPSEEK_TOOL_MODEL", "deepseek-chat"),
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         max_retries=int(os.getenv("MAX_RETRIES", "2")),
         runtime_dir=RUNTIME_DIR,

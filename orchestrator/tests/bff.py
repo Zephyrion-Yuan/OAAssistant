@@ -93,11 +93,13 @@ def main() -> int:
     assert body["found"] and body["profile"]["default_factory_code"] == "1010", body
     print("PASS profile save/get round-trip")
 
-    # 3) chat SSE: acquire router, public stock -> 412 draft
+    # 3) chat SSE: acquire router, public stock -> 412 draft.
+    # userId=tester supplies the department the 412 flow needs for cost-center match.
     r = client.post("/api/chat", json={
         "message": "采购 PCR板",
         "executor": "mock",
         "save": False,
+        "userId": "tester",
         "demandRows": [
             {"materialCode": "4000023659", "materialName": "PCR板", "quantity": "10",
              "unit": "EA", "wbsCode": WBS, "demandFactoryCode": "1000"},
@@ -136,6 +138,7 @@ def main() -> int:
         "message": "采购",
         "executor": "mock",
         "save": False,
+        "userId": "tester",
         "demandRows": [
             {"materialCode": "4000023659", "materialName": "PCR板", "quantity": "4",
              "unit": "盒", "wbsCode": WBS, "demandFactoryCode": "1000"},
@@ -151,6 +154,7 @@ def main() -> int:
         "message": "4000023659 改成 4 EA",
         "executor": "mock",
         "save": False,
+        "userId": "tester",
         "threadId": thread_id,
         "continueThread": True,
     })
@@ -160,6 +164,34 @@ def main() -> int:
     assert final["status"] == "done", final
     assert any(e.get("node") == "apply_corrections" for e in events if e["type"] == "node"), events
     print("PASS chat continuation -> unit correction resumes same thread to final")
+
+    # 6) agent-chat (P1): stub the ReAct runner (real one needs a tool-calling LLM).
+    # clarify first, then a 'ready' demand -> demand event + acquire-graph drafts.
+    def _fake_intake(agent, message, thread_id):
+        if "WBS" not in message:   # vague -> clarify
+            return {"status": "clarify", "question": "请补充 WBS 和数量。"}
+        return {"status": "ready", "goal": "acquire", "reply": "已为你整理需求。", "demandRows": [
+            {"materialCode": "4000023659", "materialName": "PCR板", "quantity": "4",
+             "unit": "EA", "wbsCode": WBS, "demandFactoryCode": "1010"}]}
+    bff.set_intake_runner(_fake_intake)
+    try:
+        r = client.post("/api/agent-chat", json={"message": "领用一些传感器", "executor": "mock", "userId": "tester"})
+        ev = _parse_sse(r.text)
+        assert any(e["type"] == "clarify" for e in ev), ev
+        print("PASS agent-chat: vague request -> clarify")
+
+        r = client.post("/api/agent-chat", json={
+            "message": "采购4个PCR板，WBS " + WBS + "，工厂1010", "executor": "mock", "userId": "tester"})
+        ev = _parse_sse(r.text)
+        demand = next((e for e in ev if e["type"] == "demand"), None)
+        assert demand and demand["demandRows"][0]["materialCode"] == "4000023659", demand
+        final = next(e for e in ev if e["type"] in ("final", "needs_input"))
+        assert final["type"] == "final" and final["status"] == "done", final
+        flows = {d["workflow_id"] for d in final["drafts"]}
+        assert "412" in flows, final["drafts"]
+        print("PASS agent-chat: ready demand -> demand event + acquire-graph drafts", sorted(flows))
+    finally:
+        bff.set_intake_runner(bff._run_intake_impl)
 
     print("\nALL BFF OFFLINE TESTS PASSED")
     return 0

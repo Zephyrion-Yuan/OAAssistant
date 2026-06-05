@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["DEEPSEEK_API_KEY"] = ""  # offline: assist guidance -> deterministic fallback
 
 from oa_orchestrator.llm import clear_test_responder, set_test_responder  # noqa: E402
-from oa_orchestrator.nodes.apply_corrections import (CorrectionPatch, WbsEdit,  # noqa: E402
+from oa_orchestrator.nodes.apply_corrections import (CorrectionPatch,  # noqa: E402
+                                                     RouteOverride, WbsEdit,
                                                      apply_corrections_node)
 from oa_orchestrator.nodes.assist import assist_node  # noqa: E402
 from oa_orchestrator.state import (STATUS_FAILED, STATUS_NEEDS_INPUT,  # noqa: E402
@@ -179,6 +180,62 @@ def test_wbs_correction_fills_blank_demand_rows():
         clear_test_responder()
 
 
+def test_wbs_correction_fills_only_the_blank_bucket():
+    """Regression: a multi-bucket plan (one row already has a WBS, one is blank).
+    Supplying a WBS must fill the BLANK row, not replace the sibling that already
+    had one (the old bug left the blank row blank -> endless re-ask)."""
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=True,
+            wbsEdits=[WbsEdit(newWbsCode="C2-0225002.06.01")],
+        ) if schema is CorrectionPatch else None
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "C2-0225002.06.01",
+            "business_input": {"demandRows": [
+                {"materialCode": "A", "quantity": "1", "unit": "EA", "wbsCode": "C2-0339001.01.01"},
+                {"materialCode": "B", "quantity": "2", "unit": "EA", "wbsCode": ""}]},
+            "pending_input": {"kind": "draftReview", "resumeMode": "correct", "items": [
+                {"kind": "costCenter", "wbsCode": "C2-0339001.01.01", "materialCodes": ["A"]},
+                {"kind": "wbs", "wbsCode": "", "missingWbs": [""], "materialCodes": ["B"]}]},
+            "thread_id": "t-wbsmixed",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        rows = {r["materialCode"]: r["wbsCode"] for r in out["business_input"]["demandRows"]}
+        assert rows["A"] == "C2-0339001.01.01", rows   # sibling untouched
+        assert rows["B"] == "C2-0225002.06.01", rows    # blank bucket filled
+        print("PASS dialogue: WBS fills only the blank bucket (mixed plan), not the sibling")
+    finally:
+        clear_test_responder()
+
+
+def test_routing_override_to_transfer():
+    """Aggressive routing: '<material> 改走转储' sets routing_overrides so the
+    rerun re-routes that material's other-project stock to a project→project 89."""
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=True,
+            routeOverrides=[RouteOverride(materialCode="4000059295", action="transfer")],
+        ) if schema is CorrectionPatch else None
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "4000059295 改走转储",
+            "business_input": {"demandRows": [{"materialCode": "4000059295", "quantity": "2",
+                                               "unit": "EA", "wbsCode": "C2-0225002.06.01"}]},
+            "pending_input": {"kind": "draftReview", "resumeMode": "correct",
+                              "materialCodes": ["4000059295"]},
+            "routing_overrides": {},
+            "thread_id": "t-route",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        assert out["routing_overrides"]["4000059295"] == "transfer", out
+        print("PASS dialogue: '改走转储' -> routing_overrides[material]=transfer (re-route to 89)")
+    finally:
+        clear_test_responder()
+
+
 def test_user_department_correction_updates_profile():
     def _stub(schema, system, user):
         return CorrectionPatch(
@@ -211,6 +268,8 @@ def main() -> int:
     test_structured_needs_input_preserved()
     test_wbs_autofill_is_action()
     test_preserve_structured_stock_location_question()
+    test_wbs_correction_fills_only_the_blank_bucket()
+    test_routing_override_to_transfer()
     test_residual_handoff()
     test_transient_retry()
     test_action_done_carry_on()

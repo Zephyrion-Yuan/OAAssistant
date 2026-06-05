@@ -162,6 +162,7 @@ createApp({
       uploadState: { busy: false, message: '', files: [], lastRows: [], warnings: [], errors: [] },
       chatMessage: '', save: false, busy: false,
       activeThreadId: '', awaitingInput: false,
+      agentMode: true, agentThreadId: '',   // P1: left chat = ReAct intake agent (free NL)
     };
   },
   mounted() {
@@ -275,9 +276,10 @@ createApp({
       if (this.busy) return;
       const requestRows = this.requestRows();
       if (!requestRows.length) {
-        this.uploadState.message = '请先填写物料编码，或上传采购附件导入物料。';
+        this.uploadState.message = '请先填写物料编码，或上传附件 / 用左侧「AI 下单」自然语言描述。';
         return;
       }
+      this._oneShotForm = true;   // the 发起申请 button always submits the form rows deterministically
       const dc = this.$refs.dc;
       const text = this.chatMessage.trim() || ('采购申请(' + requestRows.length + ' 行,' + (this.save ? '保存草稿' : 'dry-run') + ')');
       this.busy = true;
@@ -344,30 +346,38 @@ createApp({
       return { appended, merged };
     },
     // ---- deep-chat streaming handler: BFF SSE -> progress + draft cards (inline-styled html) ----
+    // Routing: a parked graph (needs_input) -> correction continuation; else AI 下单 -> agent;
+    // else form-driven. Keeps the form/config panels — only the chat behavior changes (P1).
     async chatHandler(body, signals) {
       this.busy = true;
       signals.onOpen();
       const msg = (body && body.messages && body.messages.length ? body.messages[body.messages.length - 1].text : '') || this.chatMessage;
-      const demandRows = this.requestRows();
-      if (!demandRows.length) {
-        try { signals.onResponse({ html: '<div style="color:#b42318">请先填写物料编码，或上传采购附件导入物料。</div>' }); } catch (_) {}
-        signals.onClose(); this.busy = false; return;
-      }
       const continuation = Boolean(this.awaitingInput && this.activeThreadId);
-      const payload = {
-        message: msg,
-        demandRows,
-        save: this.save,
-        executor: this.executor,
-        userId: this.userId,
-        threadId: continuation ? this.activeThreadId : undefined,
-        continueThread: continuation,
-      };
+      const oneShotForm = this._oneShotForm; this._oneShotForm = false;
+      const useAgent = this.agentMode && !continuation && !oneShotForm;
+
+      let endpoint, payload;
+      if (continuation) {
+        endpoint = '/api/chat';
+        payload = { message: msg, demandRows: this.requestRows(), save: this.save, executor: this.executor, userId: this.userId, threadId: this.activeThreadId, continueThread: true };
+      } else if (useAgent) {
+        endpoint = '/api/agent-chat';
+        payload = { message: msg, save: this.save, executor: this.executor, userId: this.userId, threadId: this.agentThreadId || undefined };
+      } else {
+        const demandRows = this.requestRows();
+        if (!demandRows.length) {
+          try { signals.onResponse({ html: '<div style="color:#b42318">请先填写物料编码，或在上方开启「AI 下单」用自然语言描述。</div>' }); } catch (_) {}
+          signals.onClose(); this.busy = false; return;
+        }
+        endpoint = '/api/chat';
+        payload = { message: msg, demandRows, save: this.save, executor: this.executor, userId: this.userId };
+      }
+
       const nodes = [];
-      let tail = '';
-      const push = () => { try { signals.onResponse({ html: this.progressHtml(nodes) + tail, overwrite: true }); } catch (e) { /* first call may not allow overwrite */ try { signals.onResponse({ html: this.progressHtml(nodes) + tail }); } catch (_) {} } };
+      let head = '', tail = '';
+      const push = () => { const html = head + this.progressHtml(nodes) + tail; try { signals.onResponse({ html, overwrite: true }); } catch (e) { try { signals.onResponse({ html }); } catch (_) {} } };
       try {
-        const resp = await fetch(this.bff + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const resp = await fetch(this.bff + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
         const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
         while (true) {
@@ -377,9 +387,11 @@ createApp({
             const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 2);
             if (!line.startsWith('data:')) continue;
             const ev = JSON.parse(line.slice(5).trim());
-            if (ev.type === 'start') { this.activeThreadId = ev.threadId || this.activeThreadId; }
+            if (ev.type === 'start') { this.activeThreadId = ev.threadId || this.activeThreadId; if (useAgent) this.agentThreadId = ev.threadId || this.agentThreadId; }
+            else if (ev.type === 'clarify') { head = this.clarifyHtml(ev); push(); }
+            else if (ev.type === 'demand') { this.fillFormFromDemand(ev); head = this.demandHtml(ev); push(); }
             else if (ev.type === 'node') { nodes.push(ev.node); push(); }
-            else if (ev.type === 'final') { this.awaitingInput = false; this.activeThreadId = ''; tail = this.finalHtml(ev); push(); }
+            else if (ev.type === 'final') { this.awaitingInput = false; this.activeThreadId = ''; this.agentThreadId = ''; tail = this.finalHtml(ev); push(); }
             else if (ev.type === 'needs_input') { this.awaitingInput = true; this.activeThreadId = ev.threadId || this.activeThreadId; tail = this.needsHtml(ev); push(); }
             else if (ev.type === 'error') { tail = `<div style="color:#b42318">⚠ 错误:${esc(ev.error)}</div>`; push(); }
           }
@@ -390,9 +402,29 @@ createApp({
         signals.onClose(); this.busy = false;
       }
     },
+    fillFormFromDemand(ev) {
+      const rows = (ev.demandRows || []).map((r) => blankDemandRow({
+        materialCode: r.materialCode || '', materialName: r.materialName || '', quantity: String(r.quantity || ''),
+        unit: r.unit || 'EA', wbsCode: r.wbsCode || '', demandFactoryCode: r.demandFactoryCode || '' }));
+      if (rows.length) this.demandRows = rows;
+    },
+    clarifyHtml(ev) {
+      return `<div style="border:1px solid #cdd8ec;background:#f4f7fc;border-radius:10px;padding:9px 11px;margin:6px 0;white-space:pre-wrap"><b style="color:#3a4a6b">助手追问</b><div style="margin-top:3px">${esc(ev.question || '')}</div></div>`;
+    },
+    demandHtml(ev) {
+      const rows = (ev.demandRows || []).map((r) => `<tr><td style="padding:3px 6px;border-top:1px solid #d6ecdd">${esc(r.materialCode)}</td><td style="padding:3px 6px;border-top:1px solid #d6ecdd">${esc(r.materialName || '')}</td><td style="padding:3px 6px;border-top:1px solid #d6ecdd">${esc(r.quantity)} ${esc(r.unit || '')}</td><td style="padding:3px 6px;border-top:1px solid #d6ecdd">${esc(r.wbsCode || '')}</td></tr>`).join('');
+      const goal = ev.goal === 'return' ? '归还(414)' : '采购/领用';
+      return `<div style="border:1px solid #cfe3d4;background:#f3faf5;border-radius:10px;padding:9px 11px;margin:6px 0">
+        <b style="color:#1f7a44">已整理需求</b> <span style="color:#8a93a6;font-size:12px">(${goal}) · 已填入右侧需求表</span>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><thead><tr style="color:#6b7488;text-align:left"><th style="padding:3px 6px">物料</th><th style="padding:3px 6px">名称</th><th style="padding:3px 6px">数量</th><th style="padding:3px 6px">WBS</th></tr></thead><tbody>${rows}</tbody></table>
+        <div style="font-size:12px;color:#6b7488;margin-top:4px">正在查 PDM / 看库存并分流…</div></div>`;
+    },
     // ---- inline-styled HTML (rendered inside deep-chat shadow DOM) ----
     intro() {
-      return `<div style="font-size:13px;line-height:1.6">你好 👋 我是 OA 采购助手。<br>在右侧填好<b>需求行</b>(WBS 可写编码或<b>别称</b>),点「发起申请」,我会查 PDM、看库存,实时把它分流成 <b>412 出库 / 89 转储 / 458 采购</b> 草稿(按 WBS 分桶,<b>永不提交</b>)。</div>`;
+      return `<div style="font-size:13px;line-height:1.6">你好 👋 我是 OA 采购助手。<br>
+      ① <b>AI 下单</b>(已开,上方可关):直接一句话说需求(如「采购5个PCR板，WBS传感器项目，工厂1010」),我会自己查 PDM、解析 WBS 别称、缺信息就<b>追问</b>,凑齐后填到右侧并分流。<br>
+      ② 或在右侧手动填<b>需求行</b>(WBS 可写编码或<b>别称</b>),点「发起申请」。<br>
+      两种方式都会实时分流成 <b>412 出库 / 89 转储 / 458 采购 / 414 入库</b> 草稿(按 WBS 分桶,<b>永不提交</b>)。</div>`;
     },
     progressHtml(nodes) {
       const label = { intake: '读取需求', preflight: '预检', resolve_wbs: '解析WBS别称', classify_goal: '识别意图', pdm_enrich: '校验物料(PDM)', unit_check: '单位校验', inventory_query: '查库存', route_workflow: '分配路由', prepare: '补全+生成附件', execute_plan: '填单(草稿)', finalize: '汇总' };
