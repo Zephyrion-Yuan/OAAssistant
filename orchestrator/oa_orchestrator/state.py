@@ -27,6 +27,7 @@ class GraphState(TypedDict, total=False):
     save: bool                          # save draft after filling (False = dry-run)
     mode: str                           # "single" (one workflow) | "acquire" (Phase-1 router)
     goal: str                           # router intent: "acquire" | "return" (classify_goal)
+    forced_goal: str                    # P2: planner-supplied goal that overrides classify_goal
     workflow_id: str                    # which workflow (Stage-3 router seam; default "89")
     user_id: Optional[str]              # personalization seam
     profile: Optional[Dict[str, Any]]   # static user defaults (personalize node)
@@ -64,7 +65,7 @@ def new_state(request: str, excel_path: Optional[str], thread_id: str,
               interactive: bool, save: bool, workflow_id: str = "89",
               user_id: Optional[str] = None,
               profile: Optional[Dict[str, Any]] = None,
-              mode: str = "single") -> GraphState:
+              mode: str = "single", forced_goal: str = "") -> GraphState:
     return GraphState(
         request=request,
         excel_path=excel_path,
@@ -73,6 +74,7 @@ def new_state(request: str, excel_path: Optional[str], thread_id: str,
         save=save,
         mode=mode,
         goal="acquire",
+        forced_goal=forced_goal or "",
         workflow_id=workflow_id,
         user_id=user_id,
         profile=profile,

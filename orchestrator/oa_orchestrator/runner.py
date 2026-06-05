@@ -57,6 +57,7 @@ def run_workflow(
     correction: Optional[str] = None,
     workflow_id: str = "89",
     mode: str = "single",
+    forced_goal: str = "",
     executor=None,
     graph=None,
     settings: Optional[Settings] = None,
@@ -101,7 +102,7 @@ def run_workflow(
         payload = new_state(
             request=request, excel_path=excel_path, thread_id=thread_id,
             interactive=interactive, save=save, workflow_id=workflow_id,
-            user_id=user_id, profile=profile, mode=mode,
+            user_id=user_id, profile=profile, mode=mode, forced_goal=forced_goal,
         )
     else:
         payload = None  # resume from the last checkpoint

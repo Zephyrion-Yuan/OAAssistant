@@ -260,9 +260,11 @@ def _summarize(delta: Any) -> str:
 
 
 def _emit_acquire(events, thread_id, *, request=None, correction=None, save, profile,
-                  graph, executor, rt_settings):
-    """Run the acquire graph and push node/needs_input/final SSE events. Shared by
-    /api/chat (form-driven) and /api/agent-chat (the ReAct agent assembled the demand)."""
+                  graph, executor, rt_settings, forced_goal="", terminal=True):
+    """Run the acquire graph and push node SSE events. With terminal=True also emit
+    the needs_input/final event. Shared by /api/chat (form-driven) and
+    /api/agent-chat (the ReAct agent assembled the demand). forced_goal (P2) lets a
+    planner pin acquire/return for a demand group."""
     def on_update(chunk: Dict[str, Any]) -> None:
         for node, delta in chunk.items():
             if node == "__interrupt__":
@@ -274,7 +276,10 @@ def _emit_acquire(events, thread_id, *, request=None, correction=None, save, pro
         kwargs["correction"] = correction
     else:
         kwargs["request"] = request or "采购申请"
+        kwargs["forced_goal"] = forced_goal
     res = run_workflow(**kwargs)
+    if not terminal:
+        return res
     result = res.get("result") or {}
     if result.get("needsInput") or res.get("status") == "needs_input":
         inp = result.get("input") or res.get("pending_input") or {}
@@ -373,17 +378,44 @@ async def agent_chat(req: AgentChatRequest):
                 events.put(_sse("clarify", threadId=thread_id,
                                 question=intake.get("question") or "请补充更多信息后继续。"))
                 return
-            rows = intake.get("demandRows") or []
-            events.put(_sse("demand", threadId=thread_id, goal=intake.get("goal", "acquire"),
-                            demandRows=rows, reply=intake.get("reply", "")))
-            if not rows:
+            # P2: one demand group per goal (compound request). Single group = P1.
+            groups = intake.get("groups") or [{"goal": intake.get("goal", "acquire"),
+                                               "demandRows": intake.get("demandRows") or []}]
+            groups = [g for g in groups if g.get("demandRows")]
+            if not groups:
                 events.put(_sse("clarify", threadId=thread_id,
                                 question="未能从描述中组装出需求行，请补充物料 / 数量 / WBS。"))
                 return
-            store.save_business_input(settings.store_path, thread_id,
-                                      _business_from_demand_rows(rows), None)
-            _emit_acquire(events, thread_id, request=req.message, save=req.save,
-                          profile=profile, graph=graph, executor=executor, rt_settings=rt_settings)
+            single = len(groups) == 1
+            all_drafts: List[Dict[str, Any]] = []
+            all_notes: List[str] = []
+            pending = None
+            for i, g in enumerate(groups):
+                gt = thread_id if single else f"{thread_id}-g{i}"
+                events.put(_sse("demand", threadId=thread_id, group=i, goal=g["goal"],
+                                demandRows=g["demandRows"], reply=(intake.get("reply", "") if i == 0 else "")))
+                store.save_business_input(settings.store_path, gt,
+                                          _business_from_demand_rows(g["demandRows"]), None)
+                res = _emit_acquire(events, gt, request=req.message, save=req.save, profile=profile,
+                                    graph=graph, executor=executor, rt_settings=rt_settings,
+                                    forced_goal=g["goal"], terminal=single)
+                result = res.get("result") or {}
+                all_drafts += result.get("drafts") or []
+                all_notes += result.get("notes") or []
+                if not single and pending is None and (result.get("needsInput") or res.get("status") == "needs_input"):
+                    pending = (res, result, gt)
+            if single:
+                return  # _emit_acquire already emitted the terminal event
+            if pending:
+                res, result, gt = pending
+                inp = result.get("input") or res.get("pending_input") or {}
+                events.put(_sse("needs_input", threadId=gt, status="needs_input",
+                                kind=inp.get("kind"), question=inp.get("question") or "需要补充输入",
+                                resumeMode=inp.get("resumeMode"), category=inp.get("category"),
+                                detail=inp, drafts=all_drafts, correctionSummary=[]))
+            else:
+                events.put(_sse("final", threadId=thread_id, status="done", ok=True,
+                                drafts=all_drafts, notes=all_notes, correctionSummary=[]))
         except Exception as exc:  # noqa: BLE001
             events.put(_sse("error", error=str(exc)))
         finally:

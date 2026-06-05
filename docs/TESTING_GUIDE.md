@@ -46,7 +46,7 @@ done
 
 **期望**:`npm run check` 无输出即通过;12 个测试都打印 `ALL … PASSED`。
 - `adaptive.py`(P3)覆盖:物料码查无→**按名称自适应重查**、唯一匹配自动改码(plans+rows 同步)、无名兜底仍走 material 闸。
-- `bff.py` 还覆盖 **P1 ReAct 下单**:`/api/agent-chat` 模糊请求→追问、明确请求→demand+草稿(离线用 `set_intake_runner` 桩;真机用 deepseek-chat 跑 agent)。
+- `bff.py` 还覆盖 **P1 ReAct 下单**:`/api/agent-chat` 模糊请求→追问、明确请求→demand+草稿;以及 **P2 复合规划**:一句话「采购A并归还B」→ 拆成两个目标组(acquire/return,各自 goal 强制),草稿聚合(412/89/414)。离线用 `set_intake_runner` 桩;真机用 deepseek-chat 跑 agent。
 - `router.py` 覆盖**库存路由表**:自有项目仓→412 | 公共仓→**89(公共→项目)+412** | 其他项目仓→**建议 458**(可对话『改走转储』改 89) | 缺口→458;外加 22 列 458 附件、WBS 分桶、PDM 拦截、缺 registry 跳过、归还 414、单位误用、别称解析、公共→项目 89 缺库存地点。
 - `idempotency.py` 覆盖:save 模式纠错重跑**不重复保存**已成功的草稿桶、内容变更使复用失效、dry-run 永不复用。
 - `assist.py` 覆盖:登录/wbsAutofill→操作引导、结构化 needs_input 保留 kind/items、残差→人工转交、瞬时→有界重试、「已处理」→重跑校验、**缺失 WBS 只补空桶不误改兄弟桶**、**『改走转储』路由覆盖**。

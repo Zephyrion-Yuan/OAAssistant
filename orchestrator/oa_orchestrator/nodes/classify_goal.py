@@ -32,6 +32,13 @@ class GoalClassification(BaseModel):
 
 
 def classify_goal_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    # P2: a planner (compound request split into per-goal groups) can force the
+    # goal for this group, skipping LLM classification of the whole message.
+    forced = str(state.get("forced_goal") or "").strip().lower()
+    if forced in ("acquire", "return"):
+        history = append_history(state, {"node": "classify_goal", "ok": True,
+                                         "goal": forced, "forced": True})
+        return {"goal": forced, "history": history}
     settings = get_settings()
     request = state.get("request") or ""
     judgment = require_structured(settings, GoalClassification, _SYSTEM, request)

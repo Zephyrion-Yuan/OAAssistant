@@ -193,6 +193,31 @@ def main() -> int:
     finally:
         bff.set_intake_runner(bff._run_intake_impl)
 
+    # 7) agent-chat (P2): compound request -> two demand groups (acquire + return),
+    # each run with its goal FORCED, drafts aggregated (412/89 from acquire + 414 from return).
+    def _fake_compound(agent, message, thread_id):
+        return {"status": "ready", "reply": "已拆分为采购与归还两组。", "groups": [
+            {"goal": "acquire", "demandRows": [
+                {"materialCode": "4000023659", "materialName": "PCR板", "quantity": "4",
+                 "unit": "EA", "wbsCode": WBS, "demandFactoryCode": "1010"}]},
+            {"goal": "return", "demandRows": [
+                {"materialCode": "4000059295", "materialName": "传感器", "quantity": "2",
+                 "unit": "EA", "wbsCode": WBS, "demandFactoryCode": "1010"}]}]}
+    bff.set_intake_runner(_fake_compound)
+    try:
+        r = client.post("/api/agent-chat", json={
+            "message": "采购4个PCR板并归还2个传感器，WBS " + WBS, "executor": "mock", "userId": "tester"})
+        ev = _parse_sse(r.text)
+        demands = [e for e in ev if e["type"] == "demand"]
+        assert len(demands) == 2 and {d["goal"] for d in demands} == {"acquire", "return"}, demands
+        final = next(e for e in ev if e["type"] in ("final", "needs_input"))
+        assert final["type"] == "final" and final["status"] == "done", final
+        flows = {d["workflow_id"] for d in final["drafts"]}
+        assert "414" in flows and ("412" in flows or "89" in flows), final["drafts"]
+        print("PASS agent-chat P2: compound -> 2 groups (acquire+return), aggregated drafts", sorted(flows))
+    finally:
+        bff.set_intake_runner(bff._run_intake_impl)
+
     print("\nALL BFF OFFLINE TESTS PASSED")
     return 0
 

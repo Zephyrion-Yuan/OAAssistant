@@ -23,7 +23,9 @@ _SYSTEM = (
     "2) 信息不全(缺物料/数量/单位/WBS/需求工厂)时,直接用中文向用户提问澄清,不要调用 emit_demand。\n"
     "3) 绝不臆造物料编码或数量;拿不准就用 query_pdm 查,或向用户确认。\n"
     "4) 信息齐全后调用 emit_demand(goal: acquire=采购/领用 或 return=归还/退库; demandRows=每物料一行)。\n"
-    "5) 你只负责理解与组装,绝不执行任何写操作或提交。"
+    "5) 复合请求:若一句话同时包含『采购/领用』与『归还/退库』,请对每个目标"
+    "分别调用一次 emit_demand(各自的 goal 与对应物料行),不要混在一组。\n"
+    "6) 你只负责理解与组装,绝不执行任何写操作或提交。"
 )
 
 
@@ -44,18 +46,25 @@ def _last_ai_text(messages: List[Any]) -> str:
 
 
 def run_intake(agent, message: str, thread_id: str) -> Dict[str, Any]:
-    """One turn. Returns either {status:'ready', goal, demandRows} when the agent
-    assembled the demand, or {status:'clarify', question} when it needs more."""
+    """One turn. Returns {status:'ready', groups:[{goal, demandRows}], ...} when the
+    agent assembled the demand (P2: one group per goal for compound requests), or
+    {status:'clarify', question} when it needs more."""
     config = {"configurable": {"thread_id": thread_id}}
     result = agent.invoke({"messages": [{"role": "user", "content": message}]}, config)
     messages = result.get("messages", []) if isinstance(result, dict) else []
 
-    for m in reversed(messages):
+    groups: List[Dict[str, Any]] = []
+    for m in messages:  # in order: every emit_demand call becomes a demand group
         for tc in (getattr(m, "tool_calls", None) or []):
-            if (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")) == "emit_demand":
-                args = (tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})) or {}
-                rows = [dict(r) for r in (args.get("demandRows") or []) if r.get("materialCode") or r.get("materialName")]
-                return {"status": "ready", "goal": str(args.get("goal") or "acquire"),
-                        "demandRows": rows, "reply": _last_ai_text(messages)}
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+            if name != "emit_demand":
+                continue
+            args = (tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})) or {}
+            rows = [dict(r) for r in (args.get("demandRows") or []) if r.get("materialCode") or r.get("materialName")]
+            if rows:
+                groups.append({"goal": str(args.get("goal") or "acquire"), "demandRows": rows})
 
+    if groups:
+        return {"status": "ready", "groups": groups, "goal": groups[0]["goal"],
+                "demandRows": groups[0]["demandRows"], "reply": _last_ai_text(messages)}
     return {"status": "clarify", "question": _last_ai_text(messages) or "请补充更多信息后继续。"}
