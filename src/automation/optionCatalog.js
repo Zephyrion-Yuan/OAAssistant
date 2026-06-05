@@ -28,6 +28,26 @@ const DEFAULT_GROUPS = {
       { value: '02', label: '02 - 采购申请+预留' }
     ]
   },
+  'oa.stockLocationSapCode': {
+    label: '库存地点SAP',
+    defaultValue: '',
+    options: [
+      { value: 'D002', label: 'D002 - 设备零件仓' },
+      { value: 'A001', label: 'A001 - 成品仓' },
+      { value: 'B001', label: 'B001 - 原材料仓' },
+      { value: 'H001', label: 'H001 - 实验室仓' }
+    ]
+  },
+  'oa.stockLocationName': {
+    label: '库存地点名称',
+    defaultValue: '',
+    options: [
+      { value: '设备零件仓', label: '设备零件仓 - D002' },
+      { value: '成品仓', label: '成品仓 - A001' },
+      { value: '原材料仓', label: '原材料仓 - B001' },
+      { value: '实验室仓', label: '实验室仓 - H001' }
+    ]
+  },
   'oa89.movementType': {
     label: '移动类型',
     defaultValue: '普通库存转储至普通库存',

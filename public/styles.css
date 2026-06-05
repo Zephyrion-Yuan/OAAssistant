@@ -200,6 +200,12 @@ dd {
   grid-column: 1 / -1;
 }
 
+.wbsGrid .hintText {
+  color: #667085;
+  font-size: 12px;
+  margin: 0;
+}
+
 .wbsGrid input,
 .wbsGrid select {
   border: 1px solid #d8dee9;

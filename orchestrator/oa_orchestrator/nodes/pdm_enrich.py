@@ -33,6 +33,7 @@ def make_pdm_enrich(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     def pdm_enrich_node(state: Dict[str, Any]) -> Dict[str, Any]:
         business = dict(state.get("business_input") or {})
         plans: List[Dict[str, Any]] = [dict(p) for p in business.get("materialPlans", [])]
+        demand_rows: List[Dict[str, Any]] = [dict(r) for r in business.get("demandRows", [])]
         enriched: Dict[str, Any] = {}
         bad_codes: List[str] = []
 
@@ -86,6 +87,16 @@ def make_pdm_enrich(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
             }
 
         business["materialPlans"] = plans
+        for row in demand_rows:
+            data = enriched.get(str(row.get("materialCode") or ""))
+            if not data:
+                continue
+            if not row.get("materialName") and data.get("materialName"):
+                row["materialName"] = data.get("materialName")
+            if not row.get("unit") and data.get("unit"):
+                row["unit"] = data.get("unit")
+        if demand_rows:
+            business["demandRows"] = demand_rows
         history = append_history(state, {"node": "pdm_enrich", "ok": True, "validated": len(plans)})
         return {
             "business_input": business,

@@ -44,6 +44,10 @@ _STRUCTURAL_HINTS = ("locator", "selector", "waiting for", "not found",
 _KIND_TRIAGE = {
     "material": ("input", RESUME_MIXED),                 # give a valid code OR fix PDM master data
     "unitReview": ("input", RESUME_CORRECT),
+    "wbs": ("input", RESUME_CORRECT),
+    "transferOutWbs": ("input", RESUME_CORRECT),
+    "transferInWbs": ("input", RESUME_CORRECT),
+    "userDepartment": ("input", RESUME_CORRECT),
     "costCenter": ("input", RESUME_MIXED),
     "stockLocation": ("input", RESUME_MIXED),
     "transferOutStockLocation": ("input", RESUME_MIXED),
@@ -93,9 +97,14 @@ def _compose_guidance(settings, state: Dict[str, Any], pending: Dict[str, Any],
                       kind: str, category: str, det_question: str,
                       result: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     """LLM-compose the user-facing guidance; deterministic fallback = det_question."""
+    if pending.get("preserveQuestion"):
+        return det_question, None
     business = state.get("business_input") or {}
     keep = ("materialCode", "workflow_id", "wbsCode", "demandUnit", "baseUnit",
             "suggestedUnit", "suggestedQuantity", "error", "skipReason", "question")
+    keep_extra = ("workflow", "transferInWbs", "transferOutWbs", "missingWbs",
+                  "missingStockLocationSides", "materialCodes")
+    keep = keep + keep_extra
     context = {
         "category": category,
         "kind": kind,

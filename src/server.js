@@ -108,9 +108,7 @@ function validateSsoHandoffUrl(rawUrl) {
 
 async function openUrlInManagedEdge(rawUrl) {
   const targetUrl = validateSsoHandoffUrl(rawUrl);
-  const context = await edgeSession.getContext();
-  const page = await context.newPage();
-  await page.bringToFront();
+  const page = await edgeSession.newPage({ bringToFront: true });
   await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
   return {
     ok: true,
@@ -330,6 +328,7 @@ const wbsUpsertSchema = z.object({
   mrpController: z.string().optional(),
   stockLocationName: z.string().optional(),
   stockLocationSapCode: z.string().optional(),
+  warehouseType: z.string().optional(),
   projectType: z.string().optional(),
   purchaseType: z.string().optional(),
   purchaseDemandType: z.string().optional(),

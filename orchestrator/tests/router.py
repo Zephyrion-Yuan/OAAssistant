@@ -70,10 +70,11 @@ def make_workbook(rows):
     return str(path)
 
 
-def run(graph, *, excel, thread, save, mode="acquire"):
+def run(graph, *, excel, thread, save, mode="acquire", profile=None):
     config = {"configurable": {"thread_id": thread}}
     state = new_state(request="按需求表采购/出库/转储", excel_path=excel, thread_id=thread,
-                      interactive=False, save=save, mode=mode)
+                      interactive=False, save=save, mode=mode,
+                      profile=profile or {"user_id": "tester", "department": "研发三组"})
     return graph.invoke(state, config)
 
 
@@ -111,6 +112,8 @@ def main() -> int:
     assert drafts["412"]["wbsCode"] == DEMAND_WBS
     assert drafts["412"]["materialLines"][0]["materialCode"] == "4000023659"
     assert drafts["412"]["materialLines"][0]["quantity"] == "10"
+    entry412 = next(e for e in out["plan"]["entries"] if e["workflow_id"] == "412")
+    assert entry412["request"]["userDepartment"] == "研发三组", entry412["request"]
     # 89: transfer the 2 from the other project's WBS into the demand WBS
     assert drafts["89"]["transferOutWbs"] == SOURCE_WBS
     assert drafts["89"]["materialLines"][0]["materialCode"] == "4000059295"
@@ -136,13 +139,60 @@ def main() -> int:
     data = [c.value for c in aws[3]]
     # 需求类型=02, 物料编码, 需求数量=3, 申请人(idx9), WBS(idx11), 工厂(idx16)
     assert data[0] == "02" and data[1] == "4000059295" and str(data[4]) == "3", data
+    assert data[2] == "传感器" and data[5] == "EA", data
+    assert data[10] == "C2-0225002" and data[15] == "M01", data
     assert data[11] == DEMAND_WBS and data[16] == "1010", data
     assert data[9] == "demo-buyer", data[9]   # 申请人 from registry.purchaser
+    assert data[18] == "苏州工业园区玲珑街88号" and data[19] == "紧急", data
     print("PASS 458 attachment matches real 22-col template:", att.name)
 
     # 3) shortfall note recorded
     assert any("缺口" in n for n in result["notes"]), result["notes"]
     print("PASS shortfall note recorded:", result["notes"][0])
+
+    # 3a) 412 requires user department for cost-center matching.
+    missing_dept = run(graph, excel=make_workbook([
+        ["1010", DEMAND_WBS, "C2-0225002", "4000023659", "PCR板", 1, "EA", "M01"],
+    ]), thread="router-missing-department", save=True, profile={"user_id": "tester"})
+    assert missing_dept.get("status") == STATUS_NEEDS_INPUT, missing_dept.get("status")
+    missing_input = (missing_dept.get("result") or {}).get("input") or {}
+    assert missing_input.get("kind") == "userDepartment", missing_input
+    assert missing_input.get("wbsCode") == DEMAND_WBS, missing_input
+    print("PASS 412 missing profile department -> needs_input userDepartment")
+
+    # 3b) 412 project code falls back to the leading project definition in WBS.
+    saved_demand_wbs = dict(mockmod._WBS_REGISTRY[DEMAND_WBS])
+    try:
+        mockmod._WBS_REGISTRY[DEMAND_WBS] = {**saved_demand_wbs, "projectDefinition": ""}
+        mockmod._INVENTORY["4000023659"] = [_loc("1010", "A001", "成品仓", "", "1.000", "")]
+        project_fallback = run(graph, excel=make_workbook([
+            ["1010", DEMAND_WBS, "", "4000023659", "PCR板", 1, "EA", "M01"],
+        ]), thread="router-412-project-fallback", save=True)
+        assert project_fallback.get("status") == STATUS_DONE, (
+            project_fallback.get("status"), project_fallback.get("result")
+        )
+        entry412_fallback = next(e for e in project_fallback["plan"]["entries"] if e["workflow_id"] == "412")
+        assert entry412_fallback["request"]["structured"]["projectDefinition"] == "C2-0225002", (
+            entry412_fallback["request"]
+        )
+        print("PASS 412 projectDefinition empty -> derived from WBS for project-code fill")
+    finally:
+        mockmod._WBS_REGISTRY[DEMAND_WBS] = saved_demand_wbs
+
+    # 3c) frontend-like sparse row: PDM fills material name/unit; WBS fills
+    # project definition/MRP/delivery address/remark.
+    mockmod._INVENTORY["4000059295"] = []
+    sparse = run(graph, excel=make_workbook([
+        ["1010", DEMAND_WBS, "", "4000059295", "", 1, "", ""],
+    ]), thread="router-sparse-458", save=True)
+    assert sparse.get("status") == STATUS_DONE, (sparse.get("status"), sparse.get("result"))
+    sparse_entry = next(e for e in sparse["plan"]["entries"] if e["workflow_id"] == "458")
+    sparse_ws = load_workbook(Path(sparse_entry["request"]["structured"]["normalizedPath"])).active
+    sparse_data = [c.value for c in sparse_ws[3]]
+    assert sparse_data[2] == "传感器模组" and sparse_data[5] == "EA", sparse_data
+    assert sparse_data[10] == "C2-0225002" and sparse_data[15] == "P22", sparse_data
+    assert sparse_data[18] == "苏州工业园区玲珑街88号" and sparse_data[19] == "紧急", sparse_data
+    print("PASS sparse 458 demand -> attachment backfilled name/unit/project/MRP/address/WBS remark")
 
     # 4) WBS bucketing: same material, two WBS -> separate 458 drafts
     out2 = run(graph, excel=make_workbook([
@@ -164,7 +214,25 @@ def main() -> int:
     assert out3.get("status") == STATUS_NEEDS_INPUT, out3.get("status")
     print("PASS missing-registry WBS -> 412 draft skipped (needsInput costCenter), others unaffected")
 
-    # 6) return mode (classify_goal=return) -> 414 入库 draft bucketed by WBS, no stock fan-out
+    # 6) 89 missing source stock location -> needs_input says which side/WBS is missing
+    saved_source = dict(mockmod._WBS_REGISTRY[SOURCE_WBS])
+    try:
+        mockmod._WBS_REGISTRY[SOURCE_WBS] = {**saved_source, "stockLocationName": "", "stockLocationSapCode": ""}
+        mockmod._INVENTORY["4000059295"] = [_loc("1010", "D002", "设备零件仓", SOURCE_WBS, "2.000", "Q")]
+        out_stock = run(graph, excel=make_workbook([
+            ["1010", DEMAND_WBS, "C2-0225002", "4000059295", "传感器", 2, "EA", "M01"],
+        ]), thread="router-89-missing-stock", save=True)
+        assert out_stock.get("status") == STATUS_NEEDS_INPUT, out_stock.get("status")
+        pending_stock = (out_stock.get("result") or {}).get("input") or {}
+        assert pending_stock.get("kind") == "stockLocation", pending_stock
+        assert pending_stock.get("transferOutWbs") == SOURCE_WBS, pending_stock
+        assert pending_stock.get("missingWbs") == [SOURCE_WBS], pending_stock
+        assert "转出 WBS" in pending_stock.get("question", ""), pending_stock
+        print("PASS 89 missing source stock location -> needs_input names transfer-out WBS")
+    finally:
+        mockmod._WBS_REGISTRY[SOURCE_WBS] = saved_source
+
+    # 7) return mode (classify_goal=return) -> 414 入库 draft bucketed by WBS, no stock fan-out
     _GOAL["value"] = "return"
     out4 = run(graph, excel=make_workbook([
         ["1010", DEMAND_WBS, "C2-0225002", "4000023659", "PCR板", 4, "EA", "M01"],
@@ -177,7 +245,7 @@ def main() -> int:
     assert d414["wbsCode"] == DEMAND_WBS and d414["ok"] and d414["requestId"], d414
     print("PASS return mode -> single 414 入库 draft saved")
 
-    # 7) unit mismatch (demand 盒 vs PDM base EA) -> unit_check LLM flags -> needs_input
+    # 8) unit mismatch (demand 盒 vs PDM base EA) -> unit_check LLM flags -> needs_input
     out5 = run(graph, excel=make_workbook([
         ["1010", DEMAND_WBS, "C2-0225002", "4000023659", "PCR板", 50, "盒", "M01"],
     ]), thread="router-unit", save=True)
@@ -185,7 +253,7 @@ def main() -> int:
     assert (out5.get("result") or {}).get("input", {}).get("kind") == "unitReview", out5.get("result")
     print("PASS unit mismatch (盒≠EA) -> unit_check stops for confirmation (needs_input)")
 
-    # 8) WBS alias: demand row references the WBS by its nickname -> resolved to code
+    # 9) WBS alias: demand row references the WBS by its nickname -> resolved to code
     out6 = run(graph, excel=make_workbook([
         ["1010", "传感器项目", "C2-0225002", "4000023659", "PCR板", 10, "EA", "M01"],
     ]), thread="router-alias", save=True)

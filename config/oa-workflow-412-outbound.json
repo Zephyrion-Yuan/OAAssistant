@@ -28,6 +28,7 @@
     "costCenterButton": "#field7482span > div:nth-of-type(2) > button",
     "costCenterNameInput": "input#con7457_value:visible",
     "warehouseTypeCombobox": "#weaSelect_2 div[role=\"combobox\"]",
+    "projectCodeButton": "#field7186span > div:nth-of-type(2) > button",
     "purposeButton": "#field12742span > div:nth-of-type(2) > button",
     "reservationButton": "#field8260span > div:nth-of-type(2) > button",
     "reservationFactoryInput": "input#WERKS:visible",

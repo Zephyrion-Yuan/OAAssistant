@@ -39,10 +39,11 @@ export class CachedProfileSession {
     return this.launchPromise;
   }
 
-  async newPage() {
+  async newPage(options = {}) {
     const context = await this.getContext();
     const page = await context.newPage();
-    await page.bringToFront();
+    const bringToFront = options.bringToFront ?? process.env.MEGANT_EDGE_BRING_TO_FRONT === '1';
+    if (bringToFront) await page.bringToFront();
     return page;
   }
 

@@ -95,6 +95,12 @@ https://oa.megarobo.info/spa/workflow/static4form/index.html#/main/workflow/req?
 | `R` | `研发项目-研发领料` | `1009` |
 | `C` | `交付项目-厂内调试` | `1011` |
 
+### 项目编码
+
+- selector：`#field7186span > div:nth-of-type(2) > button`
+- 搜索值：优先使用需求行/ WBS 主数据的 `项目定义`；为空时从 WBS 编码推导，例如 `C2-0225002.06.01 -> C2-0225002`
+- 点选后应回填主表 `项目编码`，并由 OA 联动项目经理、项目名称等项目字段。
+
 ### 预留号
 
 - selector：`#field8260span > div:nth-of-type(2) > button`

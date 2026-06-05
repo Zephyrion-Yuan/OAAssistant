@@ -26,7 +26,7 @@ MAIN_HEADER_ALIASES = {
     "materialCode": ["物料编码"],
     "materialName": ["物料名称"],
     "demandQuantity": ["需求数量"],
-    "unit": ["基本计量单位"],
+    "unit": ["基本计量单位", "采购单位", "单位"],
 }
 
 COST_HEADER_ALIASES = {

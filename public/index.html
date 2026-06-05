@@ -74,7 +74,7 @@
           <h2>WBS 主数据</h2>
           <span id="wbsBadge" class="badge neutral">未加载</span>
         </div>
-        <p>每个 WBS 编码绑定工厂 / 成本中心 / 采购人 / MRP / 默认库存地点 / 458 默认选项等信息;编排层在填单前按 WBS 自动补全这些字段。仅本地业务主数据,不含任何登录凭据。</p>
+        <p>每个 WBS 编码绑定工厂 / 成本中心 / 采购人 / MRP / 默认库存地点 / 412 仓库类型 / 458 默认选项等信息;编排层在填单前按 WBS 自动补全这些字段。仅本地业务主数据,不含任何登录凭据。</p>
 
         <form id="wbsForm" class="wbsForm" autocomplete="off">
           <div class="wbsGrid">
@@ -84,9 +84,11 @@
             <label>成本中心<input name="costCenter" /></label>
             <label>采购人(申请人 工号-姓名)<input name="purchaser" placeholder="ZN092-张三" /></label>
             <label>MRP控制者<input name="mrpController" /></label>
-            <label>默认库存地点名称<input name="stockLocationName" placeholder="实验室仓" /></label>
-            <label>默认库存地点SAP码<input name="stockLocationSapCode" placeholder="H001" /></label>
+            <p class="wbsWide hintText">WBS 默认库存地点：89 转储按转出/转入各自 WBS 读取；414 入库也读取这个字段。</p>
+            <label>默认库存地点名称<input name="stockLocationName" list="stockLocationNameOptions" placeholder="实验室仓" /></label>
+            <label>默认库存地点SAP码<input name="stockLocationSapCode" list="stockLocationSapOptions" placeholder="H001" /></label>
             <label>需求日期偏移(天)<input name="demandDateOffsetDays" type="number" min="0" placeholder="5" /></label>
+            <label>是否为鲲鹏仓库<select name="warehouseType" data-options-group="oa412.warehouseType"></select></label>
             <label>是否为项目型<select name="projectType" data-options-group="oa458.projectType"></select></label>
             <label>采购类型<select name="purchaseType" data-options-group="oa458.purchaseType"></select></label>
             <label>附件需求类型<select name="purchaseDemandType" data-options-group="oa458.purchaseDemandType"></select></label>
@@ -112,13 +114,15 @@
             <thead>
               <tr>
                 <th>WBS编码</th><th>项目定义</th><th>工厂</th><th>成本中心</th><th>采购人</th>
-                <th>MRP</th><th>库存地点</th><th>458默认</th><th>偏移</th><th>状态</th><th>操作</th>
+                <th>MRP</th><th>库存地点</th><th>412仓库</th><th>458默认</th><th>偏移</th><th>状态</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="wbsTableBody"></tbody>
           </table>
         </div>
         <pre id="wbsOutput" class="output compact"></pre>
+        <datalist id="stockLocationNameOptions"></datalist>
+        <datalist id="stockLocationSapOptions"></datalist>
       </section>
     </main>
 

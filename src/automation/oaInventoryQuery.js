@@ -628,14 +628,28 @@ export async function queryOaInventory(input = {}) {
   const workflowId = normalizeText(normalized.workflowId || pageConfig.workflowId || workflowIdFromUrl(pageConfig.url) || DEFAULT_WORKFLOW_ID);
   const defaults = workflowInventoryDefaults[workflowId] || workflowInventoryDefaults[DEFAULT_WORKFLOW_ID];
   const entryUrl = normalized.url || pageConfig.url;
-  const page = await edgeSession.newPage();
-  const { inventoryConfig, sourceUrl } = await gotoAndCaptureInventoryConfig(page, entryUrl);
+  let page = null;
+  try {
+    page = await edgeSession.newPage();
+    const { inventoryConfig, sourceUrl } = await gotoAndCaptureInventoryConfig(page, entryUrl);
 
-  let login = await detectLoginPage(page);
-  if (login.requiresLogin && normalized.loginTimeoutMs > 0) {
-    const stillRequiresLogin = await waitForLoginRecovery(page, normalized.loginTimeoutMs);
-    login = await detectLoginPage(page);
-    if (stillRequiresLogin || login.requiresLogin) {
+    let login = await detectLoginPage(page);
+    if (login.requiresLogin && normalized.loginTimeoutMs > 0) {
+      const stillRequiresLogin = await waitForLoginRecovery(page, normalized.loginTimeoutMs);
+      login = await detectLoginPage(page);
+      if (stillRequiresLogin || login.requiresLogin) {
+        const screenshot = await edgeSession.captureLoginScreenshot(page, 'oa-inventory-login');
+        return {
+          page: pageConfig,
+          entryUrl: redactUrl(entryUrl),
+          requiresLogin: true,
+          login,
+          screenshotUrl: screenshot.url,
+          rows: [],
+          organizedRows: []
+        };
+      }
+    } else if (login.requiresLogin) {
       const screenshot = await edgeSession.captureLoginScreenshot(page, 'oa-inventory-login');
       return {
         page: pageConfig,
@@ -647,89 +661,82 @@ export async function queryOaInventory(input = {}) {
         organizedRows: []
       };
     }
-  } else if (login.requiresLogin) {
-    const screenshot = await edgeSession.captureLoginScreenshot(page, 'oa-inventory-login');
+
+    const attempts = [];
+    const stockQueryAttempt = await runStockQueryAttempt({ page, input: normalized });
+    if (stockQueryAttempt) {
+      attempts.push(stockQueryAttempt);
+    }
+
+    if (stockQueryAttempt?.ok && stockQueryAttempt.rowCount > 0) {
+      // The top-level OA stock query button uses /api/ps/fhd/stockQuery. Prefer it
+      // for material-code-only lookup because it searches inventory across locations.
+    } else {
+      for (const kind of attemptPlan(normalized)) {
+        const attempt = await runInventoryAttempt({
+          page,
+          input: normalized,
+          workflowId,
+          defaults,
+          config: inventoryConfig,
+          attemptKind: kind
+        });
+        attempts.push(attempt);
+        if (attempt.ok && attempt.rowCount > 0) break;
+        if (kind === 'warehouse-wbs' && !normalized.fallbackWarehouse) break;
+      }
+    }
+
+    const selectedAttempt = attempts.find((attempt) => attempt.ok && attempt.rowCount > 0) || attempts.at(-1) || null;
+    const fallbackUsed = Boolean(
+      attempts.length > 1
+        && attemptIncludesWbs(attempts[0]?.kind)
+        && !attemptIncludesWbs(selectedAttempt?.kind)
+    );
+
     return {
-      page: pageConfig,
-      entryUrl: redactUrl(entryUrl),
-      requiresLogin: true,
-      login,
-      screenshotUrl: screenshot.url,
-      rows: [],
-      organizedRows: []
+      ok: true,
+      page: {
+        id: pageConfig.id,
+        workflowId,
+        entryUrl: redactUrl(entryUrl),
+        currentUrl: redactUrl(page.url())
+      },
+      requiresLogin: false,
+      query: {
+        materialCode: normalized.materialCode,
+        factoryCode: normalized.factoryCode,
+        stockLocationCode: normalized.stockLocationCode,
+        wbsCode: normalized.wbsCode,
+        pageSize: normalized.pageSize,
+        maxPages: normalized.maxPages,
+        preferWbs: normalized.preferWbs,
+        fallbackWarehouse: normalized.fallbackWarehouse,
+        extraConditions: normalized.extraConditions
+      },
+      browser: {
+        type: INVENTORY_BROWSER_TYPE,
+        configFound: Boolean(inventoryConfig),
+        configSourceUrl: sourceUrl,
+        fieldid: String(baseParamsFromConfig(inventoryConfig).fieldid || defaults.fieldid),
+        billid: String(baseParamsFromConfig(inventoryConfig).billid || defaults.billid)
+      },
+      search: {
+        fallbackUsed,
+        selectedAttemptKind: selectedAttempt?.kind || null,
+        total: selectedAttempt?.total || 0,
+        fetchedPageCount: selectedAttempt?.fetchedPageCount || 0,
+        rowCount: selectedAttempt?.rowCount || 0,
+        truncated: Boolean(selectedAttempt?.truncated),
+        attempts: summarizeAttempts(attempts)
+      },
+      rows: selectedAttempt?.rows || [],
+      organizedRows: selectedAttempt?.organizedRows || [],
+      attempts
     };
+  } finally {
+    if (normalized.keepPageOpen !== true) {
+      await page?.close().catch(() => {});
+    }
   }
-
-  const attempts = [];
-  const stockQueryAttempt = await runStockQueryAttempt({ page, input: normalized });
-  if (stockQueryAttempt) {
-    attempts.push(stockQueryAttempt);
-  }
-
-  if (stockQueryAttempt?.ok && stockQueryAttempt.rowCount > 0) {
-    // The top-level OA stock query button uses /api/ps/fhd/stockQuery. Prefer it
-    // for material-code-only lookup because it searches inventory across locations.
-  } else {
-  for (const kind of attemptPlan(normalized)) {
-    const attempt = await runInventoryAttempt({
-      page,
-      input: normalized,
-      workflowId,
-      defaults,
-      config: inventoryConfig,
-      attemptKind: kind
-    });
-    attempts.push(attempt);
-    if (attempt.ok && attempt.rowCount > 0) break;
-    if (kind === 'warehouse-wbs' && !normalized.fallbackWarehouse) break;
-  }
-  }
-
-  const selectedAttempt = attempts.find((attempt) => attempt.ok && attempt.rowCount > 0) || attempts.at(-1) || null;
-  const fallbackUsed = Boolean(
-    attempts.length > 1
-      && attemptIncludesWbs(attempts[0]?.kind)
-      && !attemptIncludesWbs(selectedAttempt?.kind)
-  );
-
-  return {
-    ok: true,
-    page: {
-      id: pageConfig.id,
-      workflowId,
-      entryUrl: redactUrl(entryUrl),
-      currentUrl: redactUrl(page.url())
-    },
-    requiresLogin: false,
-    query: {
-      materialCode: normalized.materialCode,
-      factoryCode: normalized.factoryCode,
-      stockLocationCode: normalized.stockLocationCode,
-      wbsCode: normalized.wbsCode,
-      pageSize: normalized.pageSize,
-      maxPages: normalized.maxPages,
-      preferWbs: normalized.preferWbs,
-      fallbackWarehouse: normalized.fallbackWarehouse,
-      extraConditions: normalized.extraConditions
-    },
-    browser: {
-      type: INVENTORY_BROWSER_TYPE,
-      configFound: Boolean(inventoryConfig),
-      configSourceUrl: sourceUrl,
-      fieldid: String(baseParamsFromConfig(inventoryConfig).fieldid || defaults.fieldid),
-      billid: String(baseParamsFromConfig(inventoryConfig).billid || defaults.billid)
-    },
-    search: {
-      fallbackUsed,
-      selectedAttemptKind: selectedAttempt?.kind || null,
-      total: selectedAttempt?.total || 0,
-      fetchedPageCount: selectedAttempt?.fetchedPageCount || 0,
-      rowCount: selectedAttempt?.rowCount || 0,
-      truncated: Boolean(selectedAttempt?.truncated),
-      attempts: summarizeAttempts(attempts)
-    },
-    rows: selectedAttempt?.rows || [],
-    organizedRows: selectedAttempt?.organizedRows || [],
-    attempts
-  };
 }

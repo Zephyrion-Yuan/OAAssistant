@@ -58,6 +58,10 @@ def _add_line(bucket: Dict[str, Any], material: str, name: str, qty: Decimal, un
     if bucket["meta"] is None:
         bucket["meta"] = meta
     line = bucket["lines"].setdefault(material, {"name": name, "unit": unit, "qty": Decimal("0")})
+    if name and not line.get("name"):
+        line["name"] = name
+    if unit and not line.get("unit"):
+        line["unit"] = unit
     line["qty"] += qty
 
 

@@ -269,90 +269,97 @@ async function gotoPdmPage(page, url) {
 export async function queryPdmMaterial(input = {}) {
   const pageConfig = resolvePdmPage();
   const session = input.useLiveSession ? edgeSession : cachedProfileSession;
-  const page = await session.newPage();
-  const recorder = attachSafeNetworkRecorder(page);
-  const entryUrl = input.url || pageConfig.url;
-  const maxPages = positiveInt(input.maxPages, DEFAULT_MAX_PAGES);
-  const filters = buildFilters(input);
-  if (!Object.keys(filters).length) {
-    throw new Error('At least one PDM material query filter is required.');
-  }
-  if (input.status !== undefined) {
-    throw new Error('Status filter is not automated yet; supported filters: materialCode, materialName, specificationModel, materialGroupCode, materialGroupDesc, brand, materialLevel.');
-  }
+  let page = null;
+  try {
+    page = await session.newPage();
+    const recorder = attachSafeNetworkRecorder(page);
+    const entryUrl = input.url || pageConfig.url;
+    const maxPages = positiveInt(input.maxPages, DEFAULT_MAX_PAGES);
+    const filters = buildFilters(input);
+    if (!Object.keys(filters).length) {
+      throw new Error('At least one PDM material query filter is required.');
+    }
+    if (input.status !== undefined) {
+      throw new Error('Status filter is not automated yet; supported filters: materialCode, materialName, specificationModel, materialGroupCode, materialGroupDesc, brand, materialLevel.');
+    }
 
-  await gotoPdmPage(page, entryUrl);
-  const login = await detectLoginPage(page);
-  if (login.requiresLogin) {
-    const screenshot = input.useLiveSession
-      ? await edgeSession.captureLoginScreenshot(page, 'pdm-login')
-      : null;
+    await gotoPdmPage(page, entryUrl);
+    const login = await detectLoginPage(page);
+    if (login.requiresLogin) {
+      const screenshot = input.useLiveSession
+        ? await edgeSession.captureLoginScreenshot(page, 'pdm-login')
+        : null;
+      return {
+        page: pageConfig,
+        entryUrl: redactUrl(entryUrl),
+        requiresLogin: true,
+        login,
+        screenshotUrl: screenshot?.url || null,
+        filters,
+        rows: [],
+        organizedRows: []
+      };
+    }
+
+    const initialSurface = await scanPageSurface(page);
+    const firstPage = await submitSearch(page, filters);
+    const materialResponses = [firstPage];
+    const totalPages = firstPage.pageSize > 0 ? Math.max(1, Math.ceil(firstPage.total / firstPage.pageSize)) : 1;
+    const pagesToRead = Math.min(maxPages, totalPages);
+
+    for (let pageNo = 2; pageNo <= pagesToRead; pageNo += 1) {
+      const nextPage = await readNextPage(page, pageNo);
+      if (!nextPage) break;
+      materialResponses.push(nextPage);
+      await waitForSettledPage(page);
+    }
+
+    let rows = uniqueRows(materialResponses.flatMap((response) => response.rows || []));
+    let exactCodeFilteredOut = 0;
+    if (exactMaterialCode(input, filters)) {
+      const before = rows.length;
+      rows = rows.filter((row) => String(row.materialCode || '') === String(filters.materialCode));
+      exactCodeFilteredOut = before - rows.length;
+    }
+
+    const finalSurface = await scanPageSurface(page);
+    const fetchedPages = materialResponses.map((response) => ({
+      pageNo: response.pageNo,
+      pageSize: response.pageSize,
+      rowCount: response.rowCount,
+      url: response.url
+    }));
+
     return {
       page: pageConfig,
       entryUrl: redactUrl(entryUrl),
-      requiresLogin: true,
-      login,
-      screenshotUrl: screenshot?.url || null,
-      filters,
-      rows: [],
-      organizedRows: []
+      currentUrl: redactUrl(page.url()),
+      requiresLogin: false,
+      query: {
+        filters,
+        exactMaterialCode: exactMaterialCode(input, filters),
+        maxPages
+      },
+      search: {
+        clickedSearch: firstPage.clickedSearch,
+        total: firstPage.total,
+        totalPages,
+        fetchedPageCount: materialResponses.length,
+        fetchedPages,
+        truncated: materialResponses.length < totalPages,
+        exactCodeFilteredOut
+      },
+      fieldLabels: materialFieldLabels,
+      rows,
+      organizedRows: rows.map(organizeMaterialRow),
+      materialResponses,
+      initialSurface,
+      finalSurface,
+      apiCalls: recorder.calls
     };
+  } finally {
+    if (input.keepPageOpen !== true) {
+      await page?.close().catch(() => {});
+    }
   }
-
-  const initialSurface = await scanPageSurface(page);
-  const firstPage = await submitSearch(page, filters);
-  const materialResponses = [firstPage];
-  const totalPages = firstPage.pageSize > 0 ? Math.max(1, Math.ceil(firstPage.total / firstPage.pageSize)) : 1;
-  const pagesToRead = Math.min(maxPages, totalPages);
-
-  for (let pageNo = 2; pageNo <= pagesToRead; pageNo += 1) {
-    const nextPage = await readNextPage(page, pageNo);
-    if (!nextPage) break;
-    materialResponses.push(nextPage);
-    await waitForSettledPage(page);
-  }
-
-  let rows = uniqueRows(materialResponses.flatMap((response) => response.rows || []));
-  let exactCodeFilteredOut = 0;
-  if (exactMaterialCode(input, filters)) {
-    const before = rows.length;
-    rows = rows.filter((row) => String(row.materialCode || '') === String(filters.materialCode));
-    exactCodeFilteredOut = before - rows.length;
-  }
-
-  const finalSurface = await scanPageSurface(page);
-  const fetchedPages = materialResponses.map((response) => ({
-    pageNo: response.pageNo,
-    pageSize: response.pageSize,
-    rowCount: response.rowCount,
-    url: response.url
-  }));
-
-  return {
-    page: pageConfig,
-    entryUrl: redactUrl(entryUrl),
-    currentUrl: redactUrl(page.url()),
-    requiresLogin: false,
-    query: {
-      filters,
-      exactMaterialCode: exactMaterialCode(input, filters),
-      maxPages
-    },
-    search: {
-      clickedSearch: firstPage.clickedSearch,
-      total: firstPage.total,
-      totalPages,
-      fetchedPageCount: materialResponses.length,
-      fetchedPages,
-      truncated: materialResponses.length < totalPages,
-      exactCodeFilteredOut
-    },
-    fieldLabels: materialFieldLabels,
-    rows,
-    organizedRows: rows.map(organizeMaterialRow),
-    materialResponses,
-    initialSurface,
-    finalSurface,
-    apiCalls: recorder.calls
-  };
 }

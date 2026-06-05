@@ -205,8 +205,10 @@ def _business_from_demand_rows(rows: List[Dict[str, Any]]) -> BusinessInput:
         except (InvalidOperation, ValueError):
             qty = Decimal(0)
         totals[row.materialCode] = totals.get(row.materialCode, Decimal(0)) + qty
-        names.setdefault(row.materialCode, row.materialName)
-        units.setdefault(row.materialCode, row.unit)
+        if row.materialName and not names.get(row.materialCode):
+            names[row.materialCode] = row.materialName
+        if row.unit and not units.get(row.materialCode):
+            units[row.materialCode] = row.unit
     plans = [MaterialPlan(materialCode=c, materialName=names.get(c, ""),
                           quantity=str(totals[c]), unit=units.get(c, ""))
              for c in totals]

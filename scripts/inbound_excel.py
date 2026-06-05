@@ -24,7 +24,7 @@ MAIN_HEADER_ALIASES = {
     "materialCode": ["物料编码"],
     "materialName": ["物料名称"],
     "purchaseQuantity": ["需求数量", "采购数量", "数量"],
-    "unit": ["基本计量单位", "单位"],
+    "unit": ["基本计量单位", "采购单位", "单位"],
     "mrpController": ["MRP控制者", "MRP编码"],
 }
 

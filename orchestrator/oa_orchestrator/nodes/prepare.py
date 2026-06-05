@@ -11,7 +11,7 @@ and the others still proceed (execute_plan never blocks on one draft).
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
 from openpyxl import Workbook
 
@@ -40,13 +40,67 @@ DEFAULT_OA_PROJECT_TYPE = "是"
 MOVEMENT_TYPE_ACQUIRE_89 = "项目库存转储至项目库存"
 
 
-def _skip(entry: Dict[str, Any], kind: str, reason: str) -> Dict[str, Any]:
+def _clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _material_codes(entry: Dict[str, Any]) -> List[str]:
+    codes: List[str] = []
+    for line in entry.get("materialLines", []) or []:
+        code = _clean(line.get("materialCode"))
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _material_text(entry: Dict[str, Any]) -> str:
+    codes = _material_codes(entry)
+    return "、".join(codes) if codes else "未识别到物料"
+
+
+def _project_from_wbs(wbs_code: str) -> str:
+    code = _clean(wbs_code)
+    return code.split(".")[0] if code else ""
+
+
+def _skip(entry: Dict[str, Any], kind: str, reason: str,
+          extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
     entry["skipped"] = True
     entry["skipReason"] = reason
-    entry["needsInput"] = {"kind": kind, "question": reason,
-                           "wbsCode": entry.get("wbsCode"), "workflow": entry.get("workflow_id")}
+    pending = {
+        "kind": kind,
+        "question": reason,
+        "wbsCode": entry.get("wbsCode"),
+        "workflow": entry.get("workflow_id"),
+        "workflow_id": entry.get("workflow_id"),
+        "materialCodes": _material_codes(entry),
+        "preserveQuestion": True,
+    }
+    if extra:
+        pending.update(extra)
+    entry["needsInput"] = pending
     entry["request"] = None
     return entry
+
+
+def _missing_wbs_question(entry: Dict[str, Any], label: str) -> str:
+    return (
+        f"流程 {entry.get('workflow_id')} 缺少 {label}，当前无法继续填单。"
+        f"涉及物料：{_material_text(entry)}。请在需求行中补充 WBS 编码，"
+        "或直接回复“WBS 改成 C2-0225002.06.01”。"
+    )
+
+
+def _stock_location_question(entry: Dict[str, Any], missing: List[Dict[str, str]]) -> str:
+    parts = []
+    for item in missing:
+        parts.append(f"{item['label']} {item['wbsCode']} 缺默认库存地点")
+    return (
+        f"流程 89 项目库存转储至项目库存卡住：{'；'.join(parts)}。"
+        f"涉及物料：{_material_text(entry)}。请在配置 -> WBS 管理中维护对应 WBS 的"
+        "默认库存地点名称或 SAP 编码（例如 设备零件仓/D002），"
+        "也可以直接回复“C2-0225002.06.01 库存地点 D002”。"
+    )
 
 
 def _factory(entry: Dict[str, Any], bound: Dict[str, Any]) -> str:
@@ -82,7 +136,8 @@ def _purchase_row(line: Dict[str, Any], ctx: Dict[str, str]):
 
 
 def generate_purchase_attachment(entry: Dict[str, Any], bound: Dict[str, Any], factory: str,
-                                 target_date_text: str, purchase_type: str, out_dir) -> str:
+                                 target_date_text: str, purchase_type: str, out_dir,
+                                 material_defaults: Dict[str, Dict[str, Any]] | None = None) -> str:
     wb = Workbook()
     ws = wb.active
     ws.title = "项目需求填写界面"
@@ -92,7 +147,11 @@ def generate_purchase_attachment(entry: Dict[str, Any], bound: Dict[str, Any], f
         "purchaseType": purchase_type,
         "targetDate": target_date_text,
         "purchaser": bound.get("purchaser", ""),
-        "projectDefinition": entry.get("projectDefinition") or bound.get("projectDefinition", ""),
+        "projectDefinition": (
+            entry.get("projectDefinition")
+            or bound.get("projectDefinition")
+            or _project_from_wbs(entry.get("wbsCode", ""))
+        ),
         "wbsCode": entry.get("wbsCode", ""),
         "costCenter": bound.get("costCenter", ""),
         "mrpController": entry.get("mrpController") or bound.get("mrpController", ""),
@@ -101,7 +160,13 @@ def generate_purchase_attachment(entry: Dict[str, Any], bound: Dict[str, Any], f
         "remark": bound.get("remark", ""),
     }
     for line in entry.get("materialLines", []):                  # row 3+ data
-        ws.append(_purchase_row(line, ctx))
+        row = dict(line)
+        defaults = (material_defaults or {}).get(str(row.get("materialCode") or ""), {})
+        if not row.get("materialName") and defaults.get("materialName"):
+            row["materialName"] = defaults.get("materialName")
+        if not row.get("unit") and defaults.get("unit"):
+            row["unit"] = defaults.get("unit")
+        ws.append(_purchase_row(row, ctx))
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     safe_wbs = (entry.get("wbsCode") or "noWBS").replace("/", "_")
@@ -131,101 +196,206 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         thread = state.get("thread_id", "default")
         attach_dir = settings.runtime_dir / thread / "attachments"
         wbs_overrides = state.get("wbs_overrides") or {}
+        profile = state.get("profile") or {}
+        user_department = _clean(
+            (profile.get("department") if isinstance(profile, dict) else "")
+            or state.get("user_department")
+        )
+        material_defaults = {
+            str(plan.get("materialCode") or ""): dict(plan)
+            for plan in (state.get("business_input") or {}).get("materialPlans", [])
+            if plan.get("materialCode")
+        }
 
         prepared = []
         skipped = 0
         for raw in entries:
             entry = dict(raw)
             wf = entry.get("workflow_id")
-            bound = executor.query_wbs(entry.get("wbsCode", "")) or {}
-            bound = {**bound, **dict(wbs_overrides.get(entry.get("wbsCode", ""), {}))}
+            wbs_code = _clean(entry.get("wbsCode"))
+            transfer_out_wbs = _clean(entry.get("transferOutWbs"))
+            bound = executor.query_wbs(wbs_code) or {}
+            bound = {**bound, **dict(wbs_overrides.get(wbs_code, {}))}
             entry["bound"] = bound
             factory = _factory(entry, bound)
-            proj = entry.get("projectDefinition") or bound.get("projectDefinition", "")
+            proj = entry.get("projectDefinition") or bound.get("projectDefinition") or _project_from_wbs(wbs_code)
             mrp = entry.get("mrpController") or bound.get("mrpController", "")
             try:
                 if wf == "412":
-                    cost_center = bound.get("costCenter")
-                    if not cost_center:
-                        entry = _skip(entry, "costCenter", "成本中心未在 WBS 主数据中维护")
+                    if not wbs_code:
+                        entry = _skip(entry, "wbs", _missing_wbs_question(entry, "出库 WBS 编码"),
+                                      {"missingWbs": [""]})
                     else:
-                        structured = {
-                            "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
-                            "demandFactoryCode": factory, "mrpController": mrp,
-                            "costCenter": {"costCenterCode": cost_center, "searchName": cost_center},
-                            "materialRows": _outbound_lines(entry),
-                        }
-                        entry["request"] = OutboundFillRequest(
-                            structured=structured, save=save).model_dump(exclude_none=True)
+                        cost_center = bound.get("costCenter")
+                        if not cost_center:
+                            entry = _skip(entry, "costCenter", f"WBS {wbs_code} 未维护成本中心")
+                        elif not user_department:
+                            entry = _skip(
+                                entry,
+                                "userDepartment",
+                                (
+                                    "流程 412 物资出库需要用户部门用于成本中心匹配。"
+                                    f"当前 WBS：{wbs_code}；涉及物料：{_material_text(entry)}。"
+                                    "请回复“我的部门是研发三组”或在配置 -> 用户设置中维护部门。"
+                                ),
+                                {"userDepartment": ""},
+                            )
+                        else:
+                            warehouse_type = entry.get("warehouseType") or bound.get("warehouseType") or None
+                            structured = {
+                                "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
+                                "demandFactoryCode": factory, "mrpController": mrp,
+                                "costCenter": {"costCenterCode": cost_center, "searchName": cost_center},
+                                "materialRows": _outbound_lines(entry),
+                            }
+                            entry["request"] = OutboundFillRequest(
+                                structured=structured, save=save,
+                                userDepartment=user_department,
+                                warehouseType=warehouse_type).model_dump(exclude_none=True)
                 elif wf == "89":
-                    src = executor.query_wbs(entry.get("transferOutWbs", "")) or {}
-                    src = {**src, **dict(wbs_overrides.get(entry.get("transferOutWbs", ""), {}))}
-                    in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
-                    out_name, out_sap = src.get("stockLocationName"), src.get("stockLocationSapCode")
-                    if not (in_name or in_sap) or not (out_name or out_sap):
-                        entry = _skip(entry, "stockLocation", "转入/转出库存地点未在 WBS 主数据中维护")
+                    if not wbs_code:
+                        entry = _skip(
+                            entry,
+                            "transferInWbs",
+                            (
+                                "流程 89 项目库存转储缺少转入/需求 WBS，无法填写转入 WBS 和转入库存地点。"
+                                f"当前转出 WBS: {transfer_out_wbs or '未提供'}；涉及物料：{_material_text(entry)}。"
+                                "请在需求行中补充转入/需求 WBS，或直接回复“WBS 改成 C2-0225002.06.01”。"
+                            ),
+                            {
+                                "transferInWbs": "",
+                                "transferOutWbs": transfer_out_wbs,
+                                "missingWbs": [""],
+                            },
+                        )
+                    elif not transfer_out_wbs:
+                        entry = _skip(
+                            entry,
+                            "transferOutWbs",
+                            (
+                                f"流程 89 项目库存转储缺少转出 WBS，当前转入/需求 WBS: {wbs_code}。"
+                                f"涉及物料：{_material_text(entry)}。请提供库存来源 WBS。"
+                            ),
+                            {
+                                "transferInWbs": wbs_code,
+                                "transferOutWbs": "",
+                            },
+                        )
                     else:
-                        structured = {
-                            "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
-                            "demandFactoryCode": factory, "mrpController": mrp,
-                            "materialPlans": _transfer_plans(entry),
-                        }
-                        entry["request"] = FillRequest(
-                            structured=structured, save=save,
-                            movementType=MOVEMENT_TYPE_ACQUIRE_89, factoryCode=factory,
-                            transferOutWbs=entry.get("transferOutWbs"), transferInWbs=entry.get("wbsCode"),
-                            transferOutStockLocationName=out_name, transferOutStockLocationSapCode=out_sap,
-                            transferInStockLocationName=in_name, transferInStockLocationSapCode=in_sap,
-                        ).model_dump(exclude_none=True)
+                        src = executor.query_wbs(transfer_out_wbs) or {}
+                        src = {**src, **dict(wbs_overrides.get(transfer_out_wbs, {}))}
+                        in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
+                        out_name, out_sap = src.get("stockLocationName"), src.get("stockLocationSapCode")
+                        missing_locations: List[Dict[str, str]] = []
+                        if not (out_name or out_sap):
+                            missing_locations.append({
+                                "side": "out",
+                                "label": "转出 WBS",
+                                "wbsCode": transfer_out_wbs,
+                            })
+                        if not (in_name or in_sap):
+                            missing_locations.append({
+                                "side": "in",
+                                "label": "转入/需求 WBS",
+                                "wbsCode": wbs_code,
+                            })
+                        if missing_locations:
+                            entry = _skip(
+                                entry,
+                                "stockLocation",
+                                _stock_location_question(entry, missing_locations),
+                                {
+                                    "transferInWbs": wbs_code,
+                                    "transferOutWbs": transfer_out_wbs,
+                                    "missingStockLocationSides": [m["side"] for m in missing_locations],
+                                    "missingWbs": [m["wbsCode"] for m in missing_locations],
+                                },
+                            )
+                        else:
+                            structured = {
+                                "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
+                                "demandFactoryCode": factory, "mrpController": mrp,
+                                "materialPlans": _transfer_plans(entry),
+                            }
+                            entry["request"] = FillRequest(
+                                structured=structured, save=save,
+                                movementType=MOVEMENT_TYPE_ACQUIRE_89, factoryCode=factory,
+                                transferOutWbs=transfer_out_wbs, transferInWbs=wbs_code,
+                                transferOutStockLocationName=out_name, transferOutStockLocationSapCode=out_sap,
+                                transferInStockLocationName=in_name, transferInStockLocationSapCode=in_sap,
+                            ).model_dump(exclude_none=True)
                 elif wf == "458":
-                    offset = bound.get("demandDateOffsetDays")
-                    offset = int(offset) if offset not in (None, "") else 5
-                    target_text = (date.today() + timedelta(days=offset)).strftime("%Y%m%d")
-                    demand_type = (
-                        entry.get("purchaseDemandType")
-                        or bound.get("purchaseDemandType")
-                        or DEFAULT_PURCHASE_DEMAND_TYPE
-                    )
-                    oa_purchase_type = (
-                        entry.get("purchaseType")
-                        or bound.get("purchaseType")
-                        or DEFAULT_OA_PURCHASE_TYPE
-                    )
-                    project_type = (
-                        entry.get("projectType")
-                        or bound.get("projectType")
-                        or DEFAULT_OA_PROJECT_TYPE
-                    )
-                    path = generate_purchase_attachment(entry, bound, factory, target_text, demand_type, attach_dir)
-                    structured = {
-                        "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
-                        "demandFactoryCode": factory,
-                        "demandCompanyName": FACTORY_COMPANY_NAMES.get(factory),
-                        "targetDemandDate": target_text, "normalizedPath": path,
-                    }
-                    entry["request"] = PurchaseFillRequest(
-                        structured=structured, save=save,
-                        purchaseType=oa_purchase_type, projectType=project_type,
-                    ).model_dump(exclude_none=True)
-                elif wf == "414":
-                    in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
-                    if not (in_name or in_sap):
-                        entry = _skip(entry, "stockLocation", "入库库存地点未在 WBS 主数据中维护")
+                    if not wbs_code:
+                        entry = _skip(entry, "wbs", _missing_wbs_question(entry, "采购申请 WBS 编码"),
+                                      {"missingWbs": [""]})
                     else:
-                        lines = entry.get("materialLines", [])
+                        offset = bound.get("demandDateOffsetDays")
+                        offset = int(offset) if offset not in (None, "") else 5
+                        target_text = (date.today() + timedelta(days=offset)).strftime("%Y%m%d")
+                        demand_type = (
+                            entry.get("purchaseDemandType")
+                            or bound.get("purchaseDemandType")
+                            or DEFAULT_PURCHASE_DEMAND_TYPE
+                        )
+                        oa_purchase_type = (
+                            entry.get("purchaseType")
+                            or bound.get("purchaseType")
+                            or DEFAULT_OA_PURCHASE_TYPE
+                        )
+                        project_type = (
+                            entry.get("projectType")
+                            or bound.get("projectType")
+                            or DEFAULT_OA_PROJECT_TYPE
+                        )
+                        path = generate_purchase_attachment(
+                            entry, bound, factory, target_text, demand_type, attach_dir, material_defaults
+                        )
                         structured = {
                             "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
-                            "demandFactoryCode": factory, "mrpController": mrp,
-                            "materialRows": [{"materialCode": l.get("materialCode", ""),
-                                              "materialName": l.get("materialName", ""),
-                                              "purchaseQuantity": l.get("quantity", "0"),
-                                              "unit": l.get("unit", "")} for l in lines],
-                            "quantityByMaterialCode": {l.get("materialCode", ""): l.get("quantity", "0") for l in lines},
+                            "demandFactoryCode": factory,
+                            "demandCompanyName": FACTORY_COMPANY_NAMES.get(factory),
+                            "targetDemandDate": target_text, "normalizedPath": path,
                         }
-                        entry["request"] = InboundFillRequest(
+                        entry["request"] = PurchaseFillRequest(
                             structured=structured, save=save,
-                            stockLocationName=in_name, stockLocationSapCode=in_sap,
+                            purchaseType=oa_purchase_type, projectType=project_type,
                         ).model_dump(exclude_none=True)
+                elif wf == "414":
+                    if not wbs_code:
+                        entry = _skip(entry, "wbs", _missing_wbs_question(entry, "入库 WBS 编码"),
+                                      {"missingWbs": [""]})
+                    else:
+                        in_name, in_sap = bound.get("stockLocationName"), bound.get("stockLocationSapCode")
+                        if not (in_name or in_sap):
+                            entry = _skip(
+                                entry,
+                                "stockLocation",
+                                (
+                                    f"流程 414 项目退料入库卡住：WBS {wbs_code} 未维护默认入库库存地点。"
+                                    f"涉及物料：{_material_text(entry)}。请在配置 -> WBS 管理中维护该 WBS 的"
+                                    "默认库存地点名称或 SAP 编码，或直接回复“库存地点 D002”。"
+                                ),
+                                {
+                                    "transferInWbs": wbs_code,
+                                    "missingStockLocationSides": ["in"],
+                                    "missingWbs": [wbs_code],
+                                },
+                            )
+                        else:
+                            lines = entry.get("materialLines", [])
+                            structured = {
+                                "projectDefinition": proj, "wbsCode": entry.get("wbsCode"),
+                                "demandFactoryCode": factory, "mrpController": mrp,
+                                "materialRows": [{"materialCode": l.get("materialCode", ""),
+                                                  "materialName": l.get("materialName", ""),
+                                                  "purchaseQuantity": l.get("quantity", "0"),
+                                                  "unit": l.get("unit", "")} for l in lines],
+                                "quantityByMaterialCode": {l.get("materialCode", ""): l.get("quantity", "0") for l in lines},
+                            }
+                            entry["request"] = InboundFillRequest(
+                                structured=structured, save=save,
+                                stockLocationName=in_name, stockLocationSapCode=in_sap,
+                            ).model_dump(exclude_none=True)
                 else:
                     entry = _skip(entry, "unknownWorkflow", f"未知流程 {wf}")
             except Exception as exc:  # noqa: BLE001

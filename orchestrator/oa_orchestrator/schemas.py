@@ -42,6 +42,7 @@ class DemandRow(BaseModel):
     quantity: str = "0"
     unit: str = ""
     mrpController: str = ""
+    deliveryAddress: str = ""
 
     @field_validator("quantity", mode="before")
     @classmethod
@@ -251,6 +252,7 @@ class WbsRecord(BaseModel):
     mrpController: str = ""
     stockLocationName: str = ""
     stockLocationSapCode: str = ""
+    warehouseType: str = ""
     projectType: str = ""
     purchaseType: str = ""
     purchaseDemandType: str = ""
@@ -273,6 +275,9 @@ class MaterialLine(BaseModel):
     materialName: str = ""
     quantity: str = "0"
     unit: str = ""
+    projectDefinition: str = ""
+    mrpController: str = ""
+    deliveryAddress: str = ""
 
 
 class AllocationEntry(BaseModel):

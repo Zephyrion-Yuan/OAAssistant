@@ -40,6 +40,10 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
 async function clickExactText(page, text, options = {}) {
   const pattern = new RegExp(`^\\s*${escapeRegExp(text)}\\s*$`);
   const locator = page.getByText(pattern).last();
@@ -91,8 +95,8 @@ function browserDataMatcher({ contains }) {
 
 async function clickVisibleModalResult(page, modal, expectedText, timeoutMs = 3000) {
   const candidates = [
-    modal.locator(`[title="${expectedText}"]`).first(),
     modal.locator('tr', { hasText: expectedText }).first(),
+    modal.locator(`[title="${expectedText}"]`).first(),
     modal.getByText(expectedText, { exact: true }).first()
   ];
 
@@ -132,27 +136,46 @@ async function clickFirstModalDataRow(page, modal) {
 }
 
 async function selectWbs(page, wbsCode) {
+  const code = normalizeText(wbsCode);
+  if (!code) {
+    throw new NeedInputError('Workflow 458 requires a WBS code before opening the WBS selector.', {
+      kind: 'wbs',
+      question: '采购申请 458 缺少 WBS 编码，无法搜索 WBS。请在需求行补充 WBS，或回复“WBS 改成 C2-0225002.06.01”。',
+      wbsCode: ''
+    });
+  }
   await openBrowserField(page, '#field21089span > div:nth-of-type(2) > button');
-  await page.locator('#POSID:visible').last().fill(wbsCode);
   const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
-  const resultData = await clickSearchInModal(page, browserDataMatcher({ contains: `POSID=${encodeURIComponent(wbsCode)}` }));
+  const input = modal.locator('#POSID:visible, input#POSID:visible').last();
+  await input.waitFor({ timeout: 8000 });
+  await input.click({ clickCount: 3 }).catch(() => {});
+  await input.fill('');
+  await input.fill(code);
+  const resultData = await clickSearchInModal(page, browserDataMatcher({ contains: `POSID=${encodeURIComponent(code)}` }));
   const resultCount = Number(resultData?.total ?? resultData?.count ?? resultData?.data?.total ?? 0);
   if (resultData && resultCount < 1) {
-    throw new NeedInputError(`WBS query returned no rows for ${wbsCode}.`, {
+    throw new NeedInputError(`WBS query returned no rows for ${code}.`, {
       kind: 'wbs',
       question: 'WBS 查询没有返回候选，请确认 WBS 编码。',
-      wbsCode
+      wbsCode: code
     });
   }
 
-  const clickedExact = await clickVisibleModalResult(page, modal, wbsCode, 800);
+  const clickedExact = await clickVisibleModalResult(page, modal, code, 1500);
   if (!clickedExact) {
     const clickedFirstRow = await clickFirstModalDataRow(page, modal);
-    if (!clickedFirstRow) throw new Error(`Could not click WBS result row for ${wbsCode}.`);
+    if (!clickedFirstRow) throw new Error(`Could not click WBS result row for ${code}.`);
   }
 
-  const selectorClosed = await modal.waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false);
-  if (!selectorClosed) throw new Error(`WBS result click did not close selector for ${wbsCode}.`);
+  let selectorClosed = await modal.waitFor({ state: 'hidden', timeout: 3000 }).then(() => true).catch(() => false);
+  if (!selectorClosed) {
+    const row = modal.locator('tr', { hasText: code }).first();
+    if (await row.isVisible().catch(() => false)) {
+      await row.dblclick().catch(async () => row.click());
+      selectorClosed = await modal.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true).catch(() => false);
+    }
+  }
+  if (!selectorClosed) throw new Error(`WBS result click did not close selector for ${code}.`);
   await waitForSettledPage(page);
 }
 
@@ -355,6 +378,14 @@ export async function runPurchase(input = {}) {
     const excel = input.structured;
     if (!excel || !excel.normalizedPath) {
       throw new Error('runPurchase requires input.structured with a normalizedPath attachment.');
+    }
+    excel.wbsCode = normalizeText(excel.wbsCode);
+    if (!excel.wbsCode) {
+      throw new NeedInputError('Workflow 458 requires structured.wbsCode.', {
+        kind: 'wbs',
+        question: '采购申请 458 缺少 WBS 编码，无法进入 OA WBS 搜索。请补充 WBS，例如 C2-0225002.06.01。',
+        wbsCode: ''
+      });
     }
 
     const purchaseType = input.purchaseType || optionDefault('oa458.purchaseType', DEFAULT_PURCHASE_TYPE);

@@ -38,7 +38,7 @@
       <div class="uploadbar">
         <div class="uploadtitle">
           <strong>采购附件</strong>
-          <span class="muted">Sheet1 · 物料编码 / 采购数量</span>
+          <span class="muted">Sheet1 · 物料编码 / 采购数量 / 采购单位</span>
         </div>
         <div class="uploadactions">
           <label class="filebtn" :class="{disabled: uploadState.busy}">
@@ -53,11 +53,19 @@
           <span class="warntext" v-for="w in uploadState.warnings.slice(0,3)" :key="w">{{ w }}</span>
         </div>
         <div class="uploadpreview" v-if="uploadState.lastRows.length">
-          <span v-for="r in uploadState.lastRows" :key="r.materialCode">{{ r.materialCode }}<em v-if="r.materialName"> · {{ r.materialName }}</em> × {{ r.quantity }}</span>
+          <span v-for="r in uploadState.lastRows" :key="r.materialCode">{{ r.materialCode }}<em v-if="r.materialName"> · {{ r.materialName }}</em> × {{ r.quantity }}{{ r.unit || '' }}</span>
         </div>
       </div>
       <div class="rows">
-        <div class="rrow rhdr"><span>物料编码</span><span>名称</span><span>数量</span><span>单位</span><span>WBS / 别称</span><span>工厂</span><span></span></div>
+        <div class="rrow rhdr">
+          <span>物料编码</span>
+          <span>名称</span>
+          <span class="hdrfill">数量<button type="button" class="fillbtn" @click="fillColumnFromFirst('quantity')" title="按第一行填充数量列">填充</button></span>
+          <span class="hdrfill">单位<button type="button" class="fillbtn" @click="fillColumnFromFirst('unit')" title="按第一行填充单位列">填充</button></span>
+          <span class="hdrfill">WBS / 别称<button type="button" class="fillbtn" @click="fillColumnFromFirst('wbsCode')" title="按第一行填充 WBS 列">填充</button></span>
+          <span class="hdrfill">工厂<button type="button" class="fillbtn" @click="fillColumnFromFirst('demandFactoryCode')" title="按第一行填充工厂列">填充</button></span>
+          <span></span>
+        </div>
         <div class="rrow" v-for="(r,i) in demandRows" :key="i">
           <input v-model="r.materialCode" placeholder="4000…" />
           <input v-model="r.materialName" placeholder="名称" />
@@ -119,7 +127,7 @@
       </div>
       <!-- WBS 管理 -->
       <div v-show="cfgTab==='WBS 管理'">
-        <p class="muted small">每个 WBS 绑定工厂/成本中心/采购人/库存地点和 458 默认选项;<b>别称</b>支持模糊引用。{{ optionMsg }}</p>
+        <p class="muted small">每个 WBS 绑定工厂/成本中心/采购人/库存地点、412 仓库类型和 458 默认选项;<b>别称</b>支持模糊引用。{{ optionMsg }}</p>
         <div class="fgrid">
           <label>WBS编码*<input v-model="wbsForm.wbsCode" placeholder="C2-0225002.06.01" /></label>
           <label>别称(逗号分隔)<input v-model="wbsForm.alias" placeholder="传感器项目, SA探针" /></label>
@@ -128,9 +136,26 @@
           <label>成本中心<input v-model="wbsForm.costCenter" /></label>
           <label>采购人(工号-姓名)<input v-model="wbsForm.purchaser" placeholder="ZN092-张三" /></label>
           <label>MRP控制者<input v-model="wbsForm.mrpController" /></label>
-          <label>库存地点名称<input v-model="wbsForm.stockLocationName" /></label>
-          <label>库存地点SAP<input v-model="wbsForm.stockLocationSapCode" /></label>
+          <p class="full muted small">WBS 默认库存地点：89 转储按转出/转入各自 WBS 读取；414 入库也读取这个字段。</p>
+          <label>库存地点名称
+            <input v-model="wbsForm.stockLocationName" list="stockLocationNameOptions" />
+            <datalist id="stockLocationNameOptions">
+              <option v-for="o in optionGroup('oa.stockLocationName')" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </datalist>
+          </label>
+          <label>库存地点SAP
+            <input v-model="wbsForm.stockLocationSapCode" list="stockLocationSapOptions" />
+            <datalist id="stockLocationSapOptions">
+              <option v-for="o in optionGroup('oa.stockLocationSapCode')" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </datalist>
+          </label>
           <label>需求日期偏移(天)<input v-model="wbsForm.demandDateOffsetDays" type="number" min="0" /></label>
+          <label>是否为鲲鹏仓库
+            <select v-model="wbsForm.warehouseType">
+              <option value="">使用目录默认</option>
+              <option v-for="o in optionGroup('oa412.warehouseType')" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </label>
           <label>是否为项目型
             <select v-model="wbsForm.projectType">
               <option value="">使用目录默认</option>
@@ -159,10 +184,11 @@
           <button class="ghost" @click="loadWbs">刷新</button>
         </div>
         <div class="wbstable">
-          <div class="wt hdr"><span>WBS</span><span>别称</span><span>工厂</span><span>成本中心</span><span>库存地点</span><span>458默认</span><span></span></div>
+          <div class="wt hdr"><span>WBS</span><span>别称</span><span>工厂</span><span>成本中心</span><span>库存地点</span><span>412仓库</span><span>458默认</span><span></span></div>
           <div class="wt" v-for="w in wbsList" :key="w.wbsCode" :class="{arch: w.status==='archived'}">
             <span :title="w.wbsCode">{{ w.wbsCode }}</span><span>{{ w.alias || '-' }}</span><span>{{ w.demandFactoryCode || '-' }}</span>
             <span>{{ w.costCenter || '-' }}</span><span>{{ [w.stockLocationName,w.stockLocationSapCode].filter(Boolean).join('/') || '-' }}</span>
+            <span>{{ w.warehouseType || '-' }}</span>
             <span :title="[w.projectType,w.purchaseType,w.purchaseDemandType].filter(Boolean).join(' / ')">{{ [w.projectType,w.purchaseType,w.purchaseDemandType].filter(Boolean).join('/') || '-' }}</span>
             <span class="wacts">
               <button class="link" @click="editWbs(w)">编辑</button>

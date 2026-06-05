@@ -50,6 +50,15 @@ function encodeQueryValue(value) {
   return encodeURIComponent(String(value)).replace(/%2E/g, '.');
 }
 
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
+function projectCodeFromWbs(wbsCode) {
+  const code = normalizeText(wbsCode);
+  return code ? code.split('.')[0] : '';
+}
+
 async function clickExactText(page, text, options = {}) {
   const pattern = new RegExp(`^\\s*${escapeRegExp(text)}\\s*$`);
   const locator = page.getByText(pattern).last();
@@ -173,6 +182,94 @@ async function selectCostCenter(page, costCenter) {
   await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
   await waitForSettledPage(page);
   return { code: costCenter.costCenterCode, name: costCenter.searchName };
+}
+
+function resolveProjectCode(excel) {
+  return normalizeText(excel.projectDefinition) || projectCodeFromWbs(excel.wbsCode);
+}
+
+async function fillFirstVisibleModalInput(modal, value) {
+  const inputs = modal.locator('input:visible');
+  const count = await inputs.count();
+  for (let index = 0; index < count; index += 1) {
+    const input = inputs.nth(index);
+    if (await input.isEnabled().catch(() => false)) {
+      await input.fill(value);
+      return index;
+    }
+  }
+  throw new Error('Project code browser did not expose an editable search input.');
+}
+
+async function clickProjectSearchInModal(page, modal, projectCode) {
+  const responsePromise = page.waitForResponse((response) => (
+    response.status() === 200
+    && response.url().includes('/api/public/browser/data/')
+    && response.url().includes('type=browser.ProjectDate')
+    && response.url().includes(encodeQueryValue(projectCode))
+  ), { timeout: 15000 }).catch(() => null);
+
+  const buttons = modal.locator('button:visible');
+  const count = await buttons.count();
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index);
+    const text = (await button.innerText().catch(() => '')).replace(/\s+/g, '');
+    if (/(高级搜索|清除|取消)/.test(text)) continue;
+    if (!(await button.isEnabled().catch(() => false))) continue;
+    await button.click();
+    const response = await responsePromise;
+    if (response) return response.json().catch(() => null);
+    await waitForSettledPage(page);
+    return null;
+  }
+  throw new Error('Project code browser did not expose a search icon button.');
+}
+
+async function waitForBrowserSpanValue(page, spanSelector, expected, label) {
+  const matched = await page.waitForFunction(({ selector, value }) => {
+    const text = document.querySelector(selector)?.innerText || '';
+    return text.includes(value);
+  }, { selector: spanSelector, value: expected }, { timeout: 15000 }).then(() => true).catch(() => false);
+  if (!matched) {
+    const currentText = await page.locator(spanSelector).first().innerText().catch(() => '');
+    throw new NeedInputError(`${label} did not autofill ${expected}.`, {
+      kind: 'projectCode',
+      question: `${label}选择后没有回填 ${expected}，请确认该项目编码是否有效。`,
+      projectCode: expected,
+      currentText
+    });
+  }
+}
+
+async function selectProjectCode(page, excel) {
+  const projectCode = resolveProjectCode(excel);
+  if (!projectCode) {
+    throw new NeedInputError('Project code is required for workflow 412.', {
+      kind: 'projectCode',
+      question: '出库流程需要项目编码。请在 WBS 配置中维护项目定义，或确认 WBS 编码可推导项目编码。',
+      wbsCode: excel.wbsCode
+    });
+  }
+
+  await openBrowserField(page, workflowConfig.selectors.projectCodeButton);
+  const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
+  const inputIndex = await fillFirstVisibleModalInput(modal, projectCode);
+  const data = await clickProjectSearchInModal(page, modal, projectCode);
+  if (data && resultCount(data) < 1) {
+    throw new NeedInputError(`Project code query returned no rows for ${projectCode}.`, {
+      kind: 'projectCode',
+      question: '项目编码查询没有返回候选，请确认 WBS 对应的项目编码。',
+      projectCode,
+      wbsCode: excel.wbsCode
+    });
+  }
+  let clicked = await clickModalRow(page, modal, projectCode, 5000);
+  if (!clicked) clicked = await clickFirstModalDataRow(page, modal);
+  if (!clicked) throw new Error(`Could not select project code row for ${projectCode}.`);
+  await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await waitForSettledPage(page);
+  await waitForBrowserSpanValue(page, '#field7186span', projectCode, '项目编码');
+  return { projectCode, browserResultCount: resultCount(data), inputIndex };
 }
 
 function resolvePurpose(wbsCode) {
@@ -477,6 +574,9 @@ export async function runOutbound(input = {}) {
     results.materialQuantities = await step('Fill material apply quantities from total demand quantities', async () => (
       fillMaterialQuantities(page, results.reservation.sapRows)
     ));
+    results.projectCode = await step(`Select 项目编码 ${resolveProjectCode(excel)}`, async () => (
+      selectProjectCode(page, excel)
+    ));
 
     if (save) {
       results.save = await step('Click 保存', async () => clickSave(page));
@@ -500,6 +600,7 @@ export async function runOutbound(input = {}) {
       excel,
       parameters: {
         warehouseType,
+        projectCode: results.projectCode.projectCode,
         save
       },
       results,
@@ -524,6 +625,7 @@ export async function runOutbound(input = {}) {
         companyName: results.company.companyName,
         mrpController: excel.mrpController,
         mrpDescription: excel.mrpDescription,
+        projectCode: results.projectCode.projectCode,
         costCenterName: excel.costCenter.searchName,
         costCenterCode: excel.costCenter.costCenterCode,
         warehouseType: results.warehouseType,

@@ -9,7 +9,7 @@ function blankDemandRow(values = {}) {
 function blankWbs() {
   return { wbsCode: '', alias: '', projectDefinition: '', demandFactoryCode: '', costCenter: '',
     purchaser: '', mrpController: '', stockLocationName: '', stockLocationSapCode: '',
-    projectType: '', purchaseType: '', purchaseDemandType: '',
+    warehouseType: '', projectType: '', purchaseType: '', purchaseDemandType: '',
     deliveryAddress: '', demandDateOffsetDays: '', remark: '', status: 'active' };
 }
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -17,7 +17,8 @@ const WF = { '412': ['412 出库', '#2563eb'], '89': ['89 转储', '#be185d'], '
 const PURCHASE_HEADER_ALIASES = {
   materialCode: ['物料编码', '物料编号', '物料号', '物料代码'],
   materialName: ['物料名称', '物料描述', '名称', '描述'],
-  quantity: ['采购数量', '需求数量', '申请数量', '数量']
+  quantity: ['采购数量', '需求数量', '申请数量', '数量'],
+  unit: ['基本计量单位', '基本计量单位编码', '采购单位', '采购单位编码', '单位']
 };
 
 function normalizeHeader(value) {
@@ -99,7 +100,8 @@ function resolvePurchaseColumns(table) {
     const materialCode = findAliasColumn(row, PURCHASE_HEADER_ALIASES.materialCode);
     const materialName = findAliasColumn(row, PURCHASE_HEADER_ALIASES.materialName);
     const quantity = findAliasColumn(row, PURCHASE_HEADER_ALIASES.quantity);
-    if (materialCode >= 0 && quantity >= 0) return { headerRow: rowIndex, materialCode, materialName, quantity };
+    const unit = findAliasColumn(row, PURCHASE_HEADER_ALIASES.unit);
+    if (materialCode >= 0 && quantity >= 0) return { headerRow: rowIndex, materialCode, materialName, quantity, unit };
   }
   throw new Error('Sheet1 未找到“物料编码”和“采购数量/需求数量”表头。');
 }
@@ -123,6 +125,7 @@ function extractPurchaseRows(workbook) {
     const materialCode = normalizeMaterialCode(row[columns.materialCode]);
     const materialName = columns.materialName >= 0 ? normalizeCell(row[columns.materialName]) : '';
     const quantity = normalizeQuantityText(row[columns.quantity]);
+    const unit = columns.unit >= 0 ? normalizeCell(row[columns.unit]) : '';
     if (!materialCode && !quantity) continue;
     if (looksLikeInstructionRow(row)) continue;
     if (!materialCode) {
@@ -133,7 +136,7 @@ function extractPurchaseRows(workbook) {
       warnings.push(`第 ${rowIndex + 1} 行采购数量无效，已跳过。`);
       continue;
     }
-    rows.push({ materialCode, materialName, quantity, rowNumber: rowIndex + 1, sheetName });
+    rows.push({ materialCode, materialName, quantity, unit, rowNumber: rowIndex + 1, sheetName });
   }
   if (!rows.length) throw new Error('Sheet1 没有可导入的物料编码和采购数量。');
   return { rows, warnings, sheetName };
@@ -201,7 +204,7 @@ createApp({
       try {
         this.optionCatalog = await this.api('/api/options/catalog');
         this.optionMsg = '';
-        if (!this.wbsForm.projectType && !this.wbsForm.purchaseType && !this.wbsForm.purchaseDemandType) {
+        if (!this.wbsForm.warehouseType && !this.wbsForm.projectType && !this.wbsForm.purchaseType && !this.wbsForm.purchaseDemandType) {
           this.wbsForm = Object.assign(blankWbs(), this.wbsDefaults(), this.wbsForm);
         }
       } catch (e) {
@@ -213,6 +216,7 @@ createApp({
     optionDefault(key) { return this.optionCatalog.groups?.[key]?.defaultValue || ''; },
     wbsDefaults() {
       return {
+        warehouseType: this.optionDefault('oa412.warehouseType'),
         projectType: this.optionDefault('oa458.projectType'),
         purchaseType: this.optionDefault('oa458.purchaseType'),
         purchaseDemandType: this.optionDefault('oa458.purchaseDemandType'),
@@ -229,6 +233,18 @@ createApp({
     },
     // ---- request builder ----
     addRow() { this.demandRows.push(blankDemandRow({ quantity: '1' })); },
+    fillColumnFromFirst(field) {
+      const first = this.demandRows[0] || {};
+      const value = normalizeCell(first[field]);
+      if (!value) {
+        this.uploadState.message = '第一行该列为空，无法一键填充。';
+        return;
+      }
+      for (let index = 1; index < this.demandRows.length; index += 1) {
+        this.demandRows[index][field] = value;
+      }
+      this.uploadState.message = `已按第一行填充 ${Math.max(this.demandRows.length - 1, 0)} 行。`;
+    },
     clearDemandRows() {
       this.demandRows = [blankDemandRow()];
       this.uploadState = { busy: false, message: '已清空采购需求草稿。', files: [], lastRows: [], warnings: [], errors: [] };
@@ -237,6 +253,7 @@ createApp({
       return this.demandRows
         .map((row) => ({
           materialCode: normalizeMaterialCode(row.materialCode),
+          materialName: normalizeCell(row.materialName),
           quantity: normalizeQuantityText(row.quantity) || normalizeCell(row.quantity),
           unit: normalizeCell(row.unit),
           wbsCode: normalizeCell(row.wbsCode),
@@ -250,6 +267,7 @@ createApp({
           materialCode: normalizeMaterialCode(row.materialCode),
           materialName: normalizeCell(row.materialName),
           quantity: normalizeQuantityText(row.quantity) || normalizeCell(row.quantity),
+          unit: normalizeCell(row.unit),
         }))
         .filter((row) => row.materialCode);
     },
@@ -315,9 +333,10 @@ createApp({
         if (existing) {
           existing.quantity = addDecimalText(normalizeQuantityText(existing.quantity) || '0', row.quantity);
           if (row.materialName && normalizeCell(existing.materialName) !== row.materialName) existing.materialName = row.materialName;
+          if (row.unit && !normalizeCell(existing.unit)) existing.unit = row.unit;
           merged += 1;
         } else {
-          this.demandRows.push(blankDemandRow({ materialCode: row.materialCode, materialName: row.materialName, quantity: row.quantity }));
+          this.demandRows.push(blankDemandRow({ materialCode: row.materialCode, materialName: row.materialName, quantity: row.quantity, unit: row.unit }));
           appended += 1;
         }
       }

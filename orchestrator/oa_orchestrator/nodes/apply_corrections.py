@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .. import store
 from ..config import get_settings
 from ..llm import require_structured
-from ..schemas import BusinessInput
+from ..schemas import BusinessInput, Profile
 from ..state import STATUS_NEEDS_INPUT, STATUS_RUNNING
 from ._common import RESUME_ACTION, RESUME_MIXED, append_history
 
@@ -50,6 +50,7 @@ class WbsEdit(BaseModel):
 
     wbsCode: str = ""             # target WBS ("" => sole candidate)
     newWbsCode: str = ""          # replacement WBS
+    direction: str = ""            # optional side hint: in/out/转入/转出
     costCenter: str = ""
     stockLocationName: str = ""
     stockLocationSapCode: str = ""
@@ -61,6 +62,7 @@ class CorrectionPatch(BaseModel):
     actionable: bool = False
     materialEdits: List[MaterialEdit] = Field(default_factory=list)
     wbsEdits: List[WbsEdit] = Field(default_factory=list)
+    userDepartment: str = ""
     userReportsActionDone: bool = False   # user did an external action (logged in / fixed master data) and wants to continue
     summary: str = ""
 
@@ -77,7 +79,9 @@ _SYSTEM = (
     "materialEdits=[{materialCode:目标码, useSuggestion:true}]。\n"
     "- 成本中心(如『成本中心 CC-1010-01』): "
     "wbsEdits=[{wbsCode:目标WBS, costCenter:'CC-1010-01'}]。\n"
-    "- 库存地点(如『库存地点 H001』『库存地点名称 实验室仓』): "
+    "- 用户部门(如『我的部门是研发三组』『userDepartment=研发三组』): "
+    "userDepartment='研发三组'。\n"
+    "- 库存地点(如『库存地点 H001』『库存地点名称 实验室仓』『转出库存地点 D002』『C2-0225002.06.01 库存地点 D002』): "
     "wbsEdits=[{wbsCode:目标WBS, stockLocationSapCode 或 stockLocationName}]。\n"
     "- WBS 替换(如『WBS 改成 C2-0339001.01.01』): "
     "wbsEdits=[{wbsCode:旧WBS, newWbsCode:新WBS}]。\n"
@@ -127,8 +131,12 @@ def _rebuild_material_plans(business: Dict[str, Any]) -> None:
         if not code:
             continue
         totals[code] = totals.get(code, Decimal("0")) + _as_decimal(row.get("quantity"))
-        names.setdefault(code, str(row.get("materialName") or ""))
-        units.setdefault(code, str(row.get("unit") or ""))
+        name = str(row.get("materialName") or "")
+        unit = str(row.get("unit") or "")
+        if name and not names.get(code):
+            names[code] = name
+        if unit and not units.get(code):
+            units[code] = unit
     business["materialPlans"] = [
         {
             "materialCode": code,
@@ -212,6 +220,102 @@ def _replace_wbs(business: Dict[str, Any], old_wbs: str, new_wbs: str) -> List[s
 # --------------------------------------------------------------------------- #
 # Target inference + structured-patch application.
 # --------------------------------------------------------------------------- #
+def _append_unique(target: List[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in target:
+        target.append(text)
+
+
+def _missing_wbs_values(source: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    missing = source.get("missingWbs")
+    if isinstance(missing, list):
+        for item in missing:
+            if isinstance(item, dict):
+                _append_unique(values, item.get("wbsCode"))
+            else:
+                _append_unique(values, item)
+    elif missing:
+        _append_unique(values, missing)
+    return values
+
+
+def _pending_wbs_values(pending: Dict[str, Any], *, missing_only: bool = False) -> List[str]:
+    values: List[str] = []
+    for item in _pending_items(pending):
+        for wbs in _missing_wbs_values(item):
+            _append_unique(values, wbs)
+        if missing_only:
+            continue
+        for key in ("wbsCode", "transferInWbs", "transferOutWbs"):
+            _append_unique(values, item.get(key))
+    return values
+
+
+def _business_wbs_values(business: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    _append_unique(values, business.get("wbsCode"))
+    for row in business.get("demandRows") or []:
+        _append_unique(values, row.get("wbsCode"))
+    return values
+
+
+def _direction(edit: WbsEdit, pending: Dict[str, Any]) -> str:
+    raw = f"{edit.direction} {pending.get('kind') or ''}".lower()
+    if "out" in raw or "转出" in raw:
+        return "out"
+    if "in" in raw or "转入" in raw or "入库" in raw:
+        return "in"
+    return ""
+
+
+def _directional_wbs(pending: Dict[str, Any], direction: str) -> List[str]:
+    values: List[str] = []
+    for item in _pending_items(pending):
+        if direction == "out":
+            _append_unique(values, item.get("transferOutWbs"))
+        elif direction == "in":
+            _append_unique(values, item.get("transferInWbs") or item.get("wbsCode"))
+    return values
+
+
+def _stock_location_targets(business: Dict[str, Any], pending: Dict[str, Any], edit: WbsEdit) -> List[str]:
+    explicit = (edit.wbsCode or "").strip()
+    if explicit:
+        return [explicit]
+    direction = _direction(edit, pending)
+    if direction:
+        directed = _directional_wbs(pending, direction)
+        if directed:
+            return directed
+    missing = _pending_wbs_values(pending, missing_only=True)
+    if len(missing) == 1:
+        return missing
+    if len(missing) > 1:
+        return []
+    candidates = _pending_wbs_values(pending) or _business_wbs_values(business)
+    return candidates if len(candidates) == 1 else []
+
+
+def _wbs_replace_target(business: Dict[str, Any], pending: Dict[str, Any], edit: WbsEdit) -> str:
+    explicit = (edit.wbsCode or "").strip()
+    if explicit:
+        return explicit
+    has_blank_row = any(not str(row.get("wbsCode") or "").strip() for row in business.get("demandRows") or [])
+    if has_blank_row and pending.get("kind") in {"wbs", "transferInWbs"}:
+        return ""
+    candidates = (
+        _pending_wbs_values(pending, missing_only=True)
+        or _pending_wbs_values(pending)
+        or _business_wbs_values(business)
+    )
+    if len(candidates) == 1:
+        return candidates[0]
+    if has_blank_row or pending.get("kind") in {"wbs", "transferInWbs"}:
+        return ""
+    return ""
+
+
 def _material_codes(business: Dict[str, Any]) -> List[str]:
     seen: List[str] = []
     for source in (business.get("demandRows") or [], business.get("materialPlans") or []):
@@ -269,28 +373,45 @@ def _apply_patch(
         notes.extend(_set_material_fields(business, code, new_code=new_code, quantity=qty, unit=unit))
 
     for edit in patch.wbsEdits:
-        wbs = (edit.wbsCode or "").strip() or str(business.get("wbsCode") or "")
         new_wbs = (edit.newWbsCode or "").strip()
-        if new_wbs and wbs:
-            notes.extend(_replace_wbs(business, wbs, new_wbs))
-            wbs = new_wbs
-        if not wbs:
-            wbs = new_wbs
-        if not wbs:
-            continue
-        patch_fields = overrides.setdefault(wbs, {})
         cost_center = (edit.costCenter or "").strip()
         loc_name = (edit.stockLocationName or "").strip()
         loc_sap = (edit.stockLocationSapCode or "").strip()
-        if cost_center:
-            patch_fields["costCenter"] = cost_center
-            notes.append(f"WBS {wbs} 本次运行补充成本中心 {cost_center}")
-        if loc_name:
-            patch_fields["stockLocationName"] = loc_name
-            notes.append(f"WBS {wbs} 本次运行补充库存地点名称 {loc_name}")
-        if loc_sap:
-            patch_fields["stockLocationSapCode"] = loc_sap
-            notes.append(f"WBS {wbs} 本次运行补充库存地点 SAP {loc_sap}")
+
+        targets: List[str] = []
+        if new_wbs:
+            old_wbs = _wbs_replace_target(business, pending, edit)
+            notes.extend(_replace_wbs(business, old_wbs, new_wbs))
+            targets = [new_wbs]
+        elif loc_name or loc_sap:
+            targets = _stock_location_targets(business, pending, edit)
+            if not targets:
+                notes.append("存在多个可能的 WBS，请明确库存地点要维护到哪个 WBS")
+                continue
+        elif cost_center:
+            candidates = _pending_wbs_values(pending, missing_only=True) or _pending_wbs_values(pending) or _business_wbs_values(business)
+            targets = candidates if len(candidates) == 1 else []
+            if not targets:
+                notes.append("存在多个可能的 WBS，请明确成本中心要维护到哪个 WBS")
+                continue
+        else:
+            wbs = (edit.wbsCode or "").strip() or str(business.get("wbsCode") or "")
+            if wbs:
+                targets = [wbs]
+
+        for wbs in targets:
+            if not wbs:
+                continue
+            patch_fields = overrides.setdefault(wbs, {})
+            if cost_center:
+                patch_fields["costCenter"] = cost_center
+                notes.append(f"WBS {wbs} 本次运行补充成本中心 {cost_center}")
+            if loc_name:
+                patch_fields["stockLocationName"] = loc_name
+                notes.append(f"WBS {wbs} 本次运行补充库存地点名称 {loc_name}")
+            if loc_sap:
+                patch_fields["stockLocationSapCode"] = loc_sap
+                notes.append(f"WBS {wbs} 本次运行补充库存地点 SAP {loc_sap}")
 
     return notes
 
@@ -305,7 +426,9 @@ def _interpret(pending: Dict[str, Any], business: Dict[str, Any], text: str) -> 
     settings = get_settings()
     items = _pending_items(pending)
     candidate_keys = ("materialCode", "demandQuantity", "demandUnit", "baseUnit",
-                      "suggestedQuantity", "suggestedUnit", "wbsCode")
+                      "suggestedQuantity", "suggestedUnit", "wbsCode",
+                      "transferInWbs", "transferOutWbs", "missingWbs",
+                      "missingStockLocationSides")
     context = {
         "kind": pending.get("kind"),
         "question": pending.get("question"),
@@ -320,6 +443,7 @@ def _interpret(pending: Dict[str, Any], business: Dict[str, Any], text: str) -> 
         ],
         "currentWbs": sorted({str(r.get("wbsCode")) for r in (business.get("demandRows") or []) if r.get("wbsCode")})
         or ([str(business.get("wbsCode"))] if business.get("wbsCode") else []),
+        "pendingWbs": _pending_wbs_values(pending),
     }
     user = ("待补充上下文(JSON):\n" + json.dumps(context, ensure_ascii=False)
             + "\n\n用户回复:\n" + text)
@@ -360,9 +484,15 @@ def _reask(
     examples = {
         "unitReview": "示例: “按建议修改” 或 “4000023659 改成 4 EA”。",
         "material": "示例: “9999999999 改成 4000023659”。",
+        "userDepartment": "示例: “我的部门是研发三组” 或 “userDepartment=研发三组”。",
         "costCenter": "示例: “成本中心 CC-1010-01”。",
-        "stockLocation": "示例: “库存地点 H001” 或 “库存地点名称 实验室仓”。",
-        "draftReview": "示例: “成本中心 CC-1010-01” 或 “库存地点 H001”。",
+        "stockLocation": "示例: “库存地点 H001”、“转出库存地点 D002” 或 “C2-0225002.06.01 库存地点 D002”。",
+        "transferOutStockLocation": "示例: “转出库存地点 D002” 或 “C2-0339001.01.01 库存地点 D002”。",
+        "transferInStockLocation": "示例: “转入库存地点 A001” 或 “C2-0225002.06.01 库存地点 A001”。",
+        "wbs": "示例: “WBS 改成 C2-0225002.06.01”。",
+        "transferInWbs": "示例: “转入 WBS 改成 C2-0225002.06.01”。",
+        "transferOutWbs": "示例: “转出 WBS C2-0339001.01.01”。",
+        "draftReview": "示例: “成本中心 CC-1010-01” 或 “C2-0225002.06.01 库存地点 H001”。",
     }
     parked = dict(pending)
     parked["question"] = (
@@ -412,6 +542,15 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
                       [f"理解服务暂时不可用，请稍后重试或换种更明确的说法（{exc}）"])
 
     notes = _apply_patch(business, overrides, pending, patch) if patch.actionable else []
+    profile_updated = False
+    profile = dict(state.get("profile") or {})
+    department = str(patch.userDepartment or "").strip()
+    if department:
+        profile["department"] = department
+        if not profile.get("user_id") and state.get("user_id"):
+            profile["user_id"] = str(state.get("user_id") or "")
+        notes.append(f"已更新用户部门 {department}")
+        profile_updated = True
     applied = [note for note in notes if any(marker in note for marker in _APPLIED_MARKERS)]
 
     # "I've done it" — the user performed an external action (logged in / fixed
@@ -453,10 +592,18 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             # The graph can still continue with in-memory corrected state.
             pass
+        if profile_updated and profile.get("user_id"):
+            try:
+                store.save_profile(settings.store_path, Profile.model_validate(profile))
+            except Exception:
+                # The in-memory profile is enough for this rerun; persistence is best-effort.
+                pass
 
     updates = _clear_for_rerun(notes)
     updates.update({"history": history, "correction_history": correction_history})
     if applied:
         # only persist edited data; an action-done rerun keeps the existing input
         updates.update({"business_input": business, "wbs_overrides": overrides})
+    if profile_updated:
+        updates["profile"] = profile
     return updates

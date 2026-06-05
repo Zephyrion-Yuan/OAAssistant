@@ -95,31 +95,38 @@ async function clickDraftButton(page, scan, buttonTexts = defaultDraftButtonText
 
 export async function scanOaPage(input) {
   const pageConfig = resolveOaPage(input);
-  const page = await edgeSession.newPage();
-  const apiCalls = attachApiRecorder(page);
-  await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
-  await waitForSettledPage(page);
-  const login = await detectLoginPage(page);
-  let loginScreenshot = null;
-  if (login.requiresLogin) {
-    loginScreenshot = await edgeSession.captureLoginScreenshot(page, `oa-${pageConfig.id}-login`);
+  let page = null;
+  try {
+    page = await edgeSession.newPage();
+    const apiCalls = attachApiRecorder(page);
+    await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
+    await waitForSettledPage(page);
+    const login = await detectLoginPage(page);
+    let loginScreenshot = null;
+    if (login.requiresLogin) {
+      loginScreenshot = await edgeSession.captureLoginScreenshot(page, `oa-${pageConfig.id}-login`);
+    }
+    const dom = await scanDom(page);
+    return {
+      page: pageConfig,
+      requiresLogin: login.requiresLogin,
+      login,
+      screenshotUrl: loginScreenshot?.url || null,
+      ...dom,
+      apiCalls
+    };
+  } finally {
+    if (input.keepPageOpen !== true) {
+      await page?.close().catch(() => {});
+    }
   }
-  const dom = await scanDom(page);
-  return {
-    page: pageConfig,
-    requiresLogin: login.requiresLogin,
-    login,
-    screenshotUrl: loginScreenshot?.url || null,
-    ...dom,
-    apiCalls
-  };
 }
 
 export async function openLoginPage(input) {
   const pageConfig = input.system === 'pdm' ? resolvePdmPage() : resolveOaPage(input);
   const url = input.url || pageConfig?.url || input.targetUrl;
   if (!url) throw new Error('Missing target url');
-  const page = await edgeSession.newPage();
+  const page = await edgeSession.newPage({ bringToFront: true });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await waitForSettledPage(page);
   const login = await detectLoginPage(page);

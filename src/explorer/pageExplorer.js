@@ -40,58 +40,65 @@ export async function explorePage(input = {}) {
   const allowedHosts = input.allowedHosts?.length ? input.allowedHosts : explorationAllowedHosts();
   const targetUrl = assertAllowedBusinessUrl(input.url, allowedHosts);
   const name = input.name || input.pageId || new URL(targetUrl).hostname;
-  const page = await edgeSession.newPage();
-  const recorder = attachSafeNetworkRecorder(page);
+  let page = null;
+  try {
+    page = await edgeSession.newPage();
+    const recorder = attachSafeNetworkRecorder(page);
 
-  await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
-  if (input.allowManualLogin !== false) {
-    await waitForAllowedCurrentUrl(page, allowedHosts, Number(input.loginTimeoutMs || 180000));
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    if (input.allowManualLogin !== false) {
+      await waitForAllowedCurrentUrl(page, allowedHosts, Number(input.loginTimeoutMs || 180000));
+    }
+    await waitForSettledPage(page);
+
+    const login = await detectLoginPage(page);
+    const safeLogin = {
+      ...login,
+      url: redactUrl(login.url),
+      textSample: redactText(login.textSample || '')
+    };
+    const initialSurface = await scanPageSurface(page);
+    const initialApiCount = recorder.count();
+    const actions = [];
+    let finalSurface = initialSurface;
+    let fieldDeltas = [];
+
+    if (!login.requiresLogin) {
+      actions.push(...await runExplorationActions(page, input.interactions || [], recorder));
+      finalSurface = await scanPageSurface(page);
+      fieldDeltas = diffFieldValues(initialSurface, finalSurface);
+    }
+
+    await page.waitForTimeout(Number(input.postScanWaitMs || 800));
+    const apiCalls = recorder.calls;
+    const report = {
+      schemaVersion: 1,
+      name,
+      pageId: input.pageId || null,
+      exploredAt: new Date().toISOString(),
+      targetUrl: redactUrl(targetUrl),
+      finalUrl: redactUrl(page.url()),
+      allowedHosts,
+      requiresLogin: safeLogin.requiresLogin,
+      login: safeLogin,
+      initialApiCallCount: initialApiCount,
+      initialSurface,
+      finalSurface,
+      actions,
+      fieldDeltas,
+      apiCalls
+    };
+
+    const artifacts = input.saveArtifact === false ? null : writeExplorationArtifacts(report);
+    return {
+      ok: true,
+      summary: summarizeReport(report),
+      artifacts,
+      report
+    };
+  } finally {
+    if (input.keepPageOpen !== true) {
+      await page?.close().catch(() => {});
+    }
   }
-  await waitForSettledPage(page);
-
-  const login = await detectLoginPage(page);
-  const safeLogin = {
-    ...login,
-    url: redactUrl(login.url),
-    textSample: redactText(login.textSample || '')
-  };
-  const initialSurface = await scanPageSurface(page);
-  const initialApiCount = recorder.count();
-  const actions = [];
-  let finalSurface = initialSurface;
-  let fieldDeltas = [];
-
-  if (!login.requiresLogin) {
-    actions.push(...await runExplorationActions(page, input.interactions || [], recorder));
-    finalSurface = await scanPageSurface(page);
-    fieldDeltas = diffFieldValues(initialSurface, finalSurface);
-  }
-
-  await page.waitForTimeout(Number(input.postScanWaitMs || 800));
-  const apiCalls = recorder.calls;
-  const report = {
-    schemaVersion: 1,
-    name,
-    pageId: input.pageId || null,
-    exploredAt: new Date().toISOString(),
-    targetUrl: redactUrl(targetUrl),
-    finalUrl: redactUrl(page.url()),
-    allowedHosts,
-    requiresLogin: safeLogin.requiresLogin,
-    login: safeLogin,
-    initialApiCallCount: initialApiCount,
-    initialSurface,
-    finalSurface,
-    actions,
-    fieldDeltas,
-    apiCalls
-  };
-
-  const artifacts = input.saveArtifact === false ? null : writeExplorationArtifacts(report);
-  return {
-    ok: true,
-    summary: summarizeReport(report),
-    artifacts,
-    report
-  };
 }

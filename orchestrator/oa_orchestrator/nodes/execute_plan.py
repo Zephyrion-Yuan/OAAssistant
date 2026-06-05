@@ -47,6 +47,7 @@ def _draft_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "workflow_id": entry.get("workflow_id"),
         "wbsCode": entry.get("wbsCode"),
+        "transferInWbs": entry.get("wbsCode"),
         "transferOutWbs": entry.get("transferOutWbs"),
         "materialLines": entry.get("materialLines", []),
         "ok": bool(result.get("ok")),
@@ -69,12 +70,44 @@ def _pending_item(entry: Dict[str, Any]) -> Dict[str, Any] | None:
         "workflow": entry.get("workflow_id"),
         "workflow_id": entry.get("workflow_id"),
         "wbsCode": entry.get("wbsCode"),
+        "transferInWbs": item.get("transferInWbs") or entry.get("wbsCode"),
         "transferOutWbs": entry.get("transferOutWbs"),
         "materialLines": entry.get("materialLines", []),
         "skipReason": entry.get("skipReason"),
         "error": result.get("error") or entry.get("skipReason"),
     })
     return item
+
+
+def _clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _material_codes(item: Dict[str, Any]) -> list[str]:
+    seen: list[str] = []
+    for code in item.get("materialCodes") or []:
+        text = _clean(code)
+        if text and text not in seen:
+            seen.append(text)
+    for line in item.get("materialLines") or []:
+        text = _clean(line.get("materialCode"))
+        if text and text not in seen:
+            seen.append(text)
+    return seen
+
+
+def _context_text(item: Dict[str, Any]) -> str:
+    workflow = _clean(item.get("workflow_id") or item.get("workflow")) or "-"
+    parts = [f"流程: {workflow}"]
+    if workflow == "89":
+        parts.append(f"转入/需求 WBS: {_clean(item.get('transferInWbs') or item.get('wbsCode')) or '未提供'}")
+        parts.append(f"转出 WBS: {_clean(item.get('transferOutWbs')) or '未提供'}")
+    else:
+        parts.append(f"WBS: {_clean(item.get('wbsCode')) or '未提供'}")
+    codes = _material_codes(item)
+    if codes:
+        parts.append("物料: " + "、".join(codes[:8]))
+    return "; ".join(parts)
 
 
 def _input_from_pending(items: list[Dict[str, Any]]) -> Dict[str, Any] | None:
@@ -85,15 +118,13 @@ def _input_from_pending(items: list[Dict[str, Any]]) -> Dict[str, Any] | None:
         question = item.get("question") or item.get("error") or "该草稿需要补充信息后才能继续。"
         item["question"] = (
             f"{question}\n"
-            f"流程: {item.get('workflow_id') or item.get('workflow') or '-'}; "
-            f"WBS: {item.get('wbsCode') or '-'}"
+            f"{_context_text(item)}"
         )
         return item
     parts = []
     for item in items:
         parts.append(
-            f"{item.get('workflow_id') or item.get('workflow') or '-'} / "
-            f"WBS {item.get('wbsCode') or '-'}: "
+            f"{_context_text(item)}: "
             f"{item.get('question') or item.get('error') or item.get('kind') or '需要补充'}"
         )
     return {

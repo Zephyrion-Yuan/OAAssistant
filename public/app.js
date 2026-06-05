@@ -105,6 +105,8 @@ const WBS_COLUMNS = [
 
 async function loadOptionCatalog() {
   optionCatalog = await api('/api/options/catalog');
+  fillDatalist('stockLocationNameOptions', 'oa.stockLocationName');
+  fillDatalist('stockLocationSapOptions', 'oa.stockLocationSapCode');
   for (const select of wbsForm.querySelectorAll('select[data-options-group]')) {
     const current = select.value;
     const group = optionCatalog.groups?.[select.dataset.optionsGroup] || { options: [] };
@@ -115,6 +117,18 @@ async function loadOptionCatalog() {
       ? current
       : (group.defaultValue || '');
   }
+}
+
+function fillDatalist(id, groupKey) {
+  const list = document.querySelector(`#${id}`);
+  if (!list) return;
+  const group = optionCatalog.groups?.[groupKey] || { options: [] };
+  list.replaceChildren(...(group.options || []).map((item) => {
+    const option = document.createElement('option');
+    option.value = item.value;
+    option.label = item.label || item.value;
+    return option;
+  }));
 }
 
 function wbsFormData() {
@@ -155,6 +169,9 @@ function renderWbsRow(record) {
   const location = document.createElement('td');
   location.textContent = [record.stockLocationName, record.stockLocationSapCode].filter(Boolean).join(' / ') || '-';
   row.appendChild(location);
+  const warehouse = document.createElement('td');
+  warehouse.textContent = record.warehouseType || '-';
+  row.appendChild(warehouse);
   const purchaseDefaults = document.createElement('td');
   purchaseDefaults.textContent = [record.projectType, record.purchaseType, record.purchaseDemandType].filter(Boolean).join(' / ') || '-';
   row.appendChild(purchaseDefaults);

@@ -28,6 +28,7 @@ const TEXT_FIELDS = [
   'mrpController',
   'stockLocationName',
   'stockLocationSapCode',
+  'warehouseType',      // 412 主表: 仓库类型 / 是否为鲲鹏仓库
   'projectType',        // 458 主表: 是否为项目型
   'purchaseType',       // 458 主表: 采购类型
   'purchaseDemandType', // 458 附件: 需求类型, e.g. 02
