@@ -1,7 +1,9 @@
 # OAAssistant — 系统架构与进度
 
 > 给另一终端 / 另一份 repo / 接手的人:**快速理解整套系统 + 知道去哪 debug**。
-> 当前测试步骤见 [`TESTING_GUIDE.md`](TESTING_GUIDE.md)。本文反映 2026-06-03 的状态。
+> 当前测试步骤见 [`TESTING_GUIDE.md`](TESTING_GUIDE.md)。本文反映 2026-06-06 的状态。
+>
+> **架构定位(重要)**:理解/规划层现在是**真正的 agentic 外壳(L3)**——前端左侧「AI 下单」走一个 ReAct intake agent(`create_react_agent` + 只读工具),自主澄清/查 PDM/查库存/解析 WBS/拆分复合目标,组装出结构化需求;**执行/业务规则/安全仍是确定性内核**,永不提交。即「agentic 外壳 + 确定性内核」。设计评估见 [`graph-design-review.html`](graph-design-review.html)。
 
 ---
 
@@ -12,8 +14,9 @@
 | 层 | 角色 | 技术 | 进程 |
 |---|---|---|---|
 | **Node「手」** | 确定性执行:登录托管 Edge、查 PDM、查库存、填单、WBS 主数据 | Node.js,零框架 `http` | `npm start` → :8787 |
-| **编排层「脑」** | LangGraph 状态机:意图理解、库存驱动路由、补全、自检。**LLM 只做理解,永不操作浏览器、永不提交** | Python + LangGraph + DeepSeek | `uvicorn …bff:app` → :8788 |
-| **前端「壳」** | 测试台:对话(左)+ 填表(右)+ 配置抽屉 | Vue3(CDN)+ deep-chat | 任意静态服务器 → :5500 |
+| **Agent 外壳(L3)** | ReAct intake agent:自由自然语言 → 自主调**只读工具**(query_pdm/inventory/resolve_wbs/query_wbs)澄清+组装需求(P1);复合请求按目标拆组(P2)。**只读/装配,绝不写/提交** | `create_react_agent` + `deepseek-chat`(tool-calling) | 同 :8788(`/api/agent-chat`) |
+| **编排层「脑」** | LangGraph 状态机:意图理解、库存驱动路由、补全、自检、原位纠错。**LLM 只做理解,永不操作浏览器、永不提交** | Python + LangGraph + DeepSeek | `uvicorn …bff:app` → :8788 |
+| **前端「壳」** | 测试台:对话(左,含「AI 下单」)+ 填表(右)+ 配置抽屉 | Vue3(CDN)+ deep-chat | 任意静态服务器 → :5500 |
 
 **硬约束**:Node 执行路径内不用 AI(确定性);全程只存草稿、零提交/审批;不碰 cookie/token/SSO 一次性链接;喂 LLM 只给业务字段。
 
@@ -52,9 +55,12 @@ orchestrator/            编排层「脑」(独立 mac venv:orchestrator/.venv,p
     workflows.py         WorkflowSpec 注册表(单流程模式用)
     llm.py               DeepSeek 工厂 + require_structured(必需,无 fallback) + 测试 stub
     intake_parsers.py    412/414/458 的 Excel 解析(openpyxl)+ FACTORY_COMPANY_NAMES
+    config.py            Settings:含 deepseek_tool_model(agent 层用 deepseek-chat)
+    agent/               【P1/P2 agentic 外壳】tools.py(只读工具 + emit_demand + tool-model 工厂)/ intake_agent.py(create_react_agent + run_intake)
+    memory/              【④⑤ 记忆脚手架,接口态/默认休眠】base.py(MemoryStore 协议 + episode/ReturnDraft schema + reverse_outbound)/ null.py / mock.py;get_memory()/recall_context()
     executors/           契约:base.py(Protocol) / http_node.py(真机) / mock.py(离线)
     nodes/               图节点(逐个见 §4)
-  tests/                 离线测试(smoke/stage2/stage3/chat_demo/inventory/wbs/router/bff)+ llm_live(真 LLM)
+  tests/                 离线测试(smoke/stage2/stage3/chat_demo/inventory/wbs/router/idempotency/assist/memory/adaptive/bff)+ llm_live(真 LLM)
   archive/serve.py       已归档(被 bff.py 取代)
 frontend/                测试台(Vue3 + deep-chat),纯 fetch/SSE 只连 BFF
 docs/                    本文 + TESTING_GUIDE + 各 Node 层运维/探索文档;archive/ 是历史
@@ -164,6 +170,18 @@ DeepSeek(`orchestrator/.env` 的 `DEEPSEEK_API_KEY`;模型 `deepseek-v4-pro` 是
 ### 4.6 持久化
 `store.sqlite`(business_inputs + profiles 表);`checkpoints.sqlite`(LangGraph SqliteSaver,断点续跑);`.runtime/orchestrator/<thread>/run.json`(审计 + 多草稿)。
 
+### 4.7 Agent 外壳(P1/P2,`agent/`)—— 真正的 L3
+**它在确定性图之外、之上**:把自由自然语言变成结构化 `demandRows`,再交给上面的 acquire 图(`save=false`),图与安全边界一行不改。
+
+- **工具(`agent/tools.py`,全只读/装配)**:`query_pdm` / `query_inventory` / `resolve_wbs` / `query_wbs` + 终结工具 `emit_demand`。模型用 `deepseek-chat`(`deepseek_tool_model`)——thinking 模型不支持强制 tool_choice,故 agent 层单独走 chat 模型。
+- **intake agent(`agent/intake_agent.py`)**:`create_react_agent(model, tools)`。`run_intake(agent, msg, thread)` 跑一轮 → 信息不全返回 `{status:'clarify', question}`(多轮靠 checkpointer 记忆);齐了对**每个目标**调一次 `emit_demand`,收集成 `groups`(P2 复合:采购 + 归还)。
+- **入口**:`POST /api/agent-chat`(SSE)。每个 group 用 `forced_goal`(透传 `run_workflow→new_state→classify_goal`,跳过整句意图分类)跑一遍 acquire 图,草稿聚合;单 group = P1。前端左侧「AI 下单」开关默认开,表单/配置面板保留不变。
+- **安全**:agent 能调的全是只读/可回退;写操作仍只走「哑」确定性管线、永不提交。AI-native 度 L1→L3,红线一条没碰。
+
+### 4.8 自适应采集(P3)+ 记忆脚手架(④⑤)
+- **P3(`pdm_enrich`)**:物料码查无 → **按名称自适应重查**;唯一启用匹配自动改码(plans+demandRows 同步重映射)、多匹配surface候选。库存查询本就按物料码**全工厂/全库位**拉(`werksList:[]`),已是完整画像,无需再按维度重拉。
+- **④⑤(`memory/`,默认休眠)**:`MemoryStore` 协议 + `PurchaseEpisode`/`ReturnDraft` schema + `NullMemory`(默认 no-op)/`MockMemory`;`get_memory()` 工厂、`recall_context()` 入口钩子;`link_reverse` = 412 出库→414 入库退料反向派生。**接口态**:待 4000 条历史记录格式确定后接 `Jsonl/Sqlite/Vector` 实现并 `MEGANT_MEMORY` 指向即可,图拓扑不动。
+
 ---
 
 ## 5. BFF + 前端
@@ -218,6 +236,6 @@ DeepSeek(`orchestrator/.env` 的 `DEEPSEEK_API_KEY`;模型 `deepseek-v4-pro` 是
 ---
 
 ## 9. 关键环境变量
-`MEGANT_EDGE_PROFILE_MODE`(`sso-handoff`|`isolated`|`current`|…)、`MEGANT_AUTO_LAUNCH_EDGE`、`MEGANT_STARTUP_URL`、`MEGANT_BROWSER_CHANNEL`、`MEGANT_SSO_ALLOWED_HOSTS`、`MEGANT_EXPLORE_ALLOWED_HOSTS`、`PORT`/`HOST`(Node);`NODE_BASE_URL`、`EXECUTOR`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL`(编排层)。
+`MEGANT_EDGE_PROFILE_MODE`(`sso-handoff`|`isolated`|`current`|…)、`MEGANT_AUTO_LAUNCH_EDGE`、`MEGANT_STARTUP_URL`、`MEGANT_BROWSER_CHANNEL`、`MEGANT_SSO_ALLOWED_HOSTS`、`MEGANT_EXPLORE_ALLOWED_HOSTS`、`PORT`/`HOST`(Node);`NODE_BASE_URL`、`EXECUTOR`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`DEEPSEEK_TOOL_MODEL`(P1/P2 agent 层,默认 `deepseek-chat`)、`DEEPSEEK_BASE_URL`、`MEGANT_MEMORY`(④⑤,默认 `null`=休眠;`mock` 起参考实现)(编排层)。
 
 测试全流程见 [`TESTING_GUIDE.md`](TESTING_GUIDE.md)。

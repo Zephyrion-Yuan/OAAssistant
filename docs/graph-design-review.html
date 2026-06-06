@@ -67,8 +67,17 @@
   <h1>OAAssistant Graph 设计评估</h1>
   <p class="sub">当前 LangGraph 设计在「工作流 ↔ 智能体」谱系上的客观定位 · 是否 AI-native · 可改进点 &nbsp;|&nbsp; 2026-06-05</p>
 
+  <div class="card" style="border:1px solid #3fb27f;background:#16241d">
+    <p class="big" style="margin-top:4px"><b style="color:#3fb27f">⬆ 更新(2026-06-06):P1 / P2 / P3 已落地</b></p>
+    <p>本报告下方的「现状评估」描述的是评估当日(L1 工作流)的状态。此后已按报告建议实现了 <b>agentic 外壳 + 确定性内核</b>:
+      <b>P1</b> ReAct 对话前端(<code>agent/</code>:<code>create_react_agent</code> + 只读工具 query_pdm/inventory/resolve_wbs/query_wbs + emit_demand,<code>/api/agent-chat</code>,前端「AI 下单」)、
+      <b>P2</b> 复合请求规划(一句话采购+归还 → 按目标拆组、<code>forced_goal</code> 各自跑图、草稿聚合)、
+      <b>P3</b> 自适应采集(物料码查无→按名重查)。理解/规划层已从 <b>L1 提升到 L3</b>;执行/业务规则/安全仍是确定性内核,**永不提交**这条红线一行未改。
+      下文保留作为「为什么这么改」的依据。当前架构以 <a href="ARCHITECTURE.md">ARCHITECTURE.md</a> §4.7/4.8 为准。</p>
+  </div>
+
   <div class="card verdict">
-    <p class="big" style="margin-top:4px"><b>一句话结论</b></p>
+    <p class="big" style="margin-top:4px"><b>一句话结论(评估当日)</b></p>
     <p>当前设计是一套<b>「LLM 增强的工作流(workflow)」</b>,不是「智能体(agent)」。客观依据只有一条、且决定性:
       <b>acquire 图的 13 个节点之间,每一条边都是 <code>state</code> 的确定性函数 —— LLM 从不决定下一个节点走向。</b>
       这正是 LangChain/Anthropic 对 workflow 的定义(「predetermined code paths」)。所以你的观察是<b>事实正确的</b>:它在控制流层面与传统自动化(RPA)没有本质区别,LLM 只是被当作 4 个离散「算子」(分类 / 判断 / 抽取 / 写引导),而非「大脑」。</p>
