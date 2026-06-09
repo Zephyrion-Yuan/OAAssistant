@@ -63,6 +63,30 @@ def _draft_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
 def _pending_item(entry: Dict[str, Any]) -> Dict[str, Any] | None:
     result = entry.get("result") or {}
     need = result.get("input") or entry.get("needsInput")
+    error = result.get("error")
+    if error and not need and not result.get("ok") and not result.get("skipped"):
+        wf = entry.get("workflow_id")
+        wbs = entry.get("wbsCode") or "-"
+        question = (
+            f"流程 {wf} / WBS {wbs} 执行失败。"
+            f"可以回复“重试{wf}流程”重新尝试，或在 OA 中处理后回复“已处理”。\n"
+            f"错误: {error}"
+        )
+        return {
+            "kind": "draftReview",
+            "question": question,
+            "workflow": wf,
+            "workflow_id": wf,
+            "wbsCode": entry.get("wbsCode"),
+            "transferInWbs": entry.get("wbsCode"),
+            "transferOutWbs": entry.get("transferOutWbs"),
+            "materialLines": entry.get("materialLines", []),
+            "materialCodes": _material_codes({"materialLines": entry.get("materialLines", [])}),
+            "error": error,
+            "retryable": True,
+            "resumeMode": "mixed",
+            "preserveQuestion": True,
+        }
     if not need:
         return None
     item = dict(need)
@@ -143,9 +167,17 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
         # their requestId so we never create a duplicate draft (idempotency).
         # Only meaningful in save mode (dry-run has no real draft to duplicate).
         saved_buckets = dict(state.get("saved_buckets") or {})
+        # Successful buckets in this graph thread are also reused on explicit
+        # retry, including dry-run. This keeps "retry 412" from refilling a
+        # sibling 458 draft that already succeeded in the same run.
+        completed_buckets = dict(state.get("completed_buckets") or {})
 
         for entry in entries:
             key = _bucket_key(entry)
+            if key in completed_buckets:
+                entry["result"] = dict(completed_buckets[key])
+                entry["reused"] = True
+                continue
             if save and key in saved_buckets:
                 entry["result"] = dict(saved_buckets[key])
                 entry["reused"] = True
@@ -167,6 +199,8 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                 entry["result"] = {"ok": False, "error": f"execute failed: {exc}"}
             if save and entry["result"].get("ok") and entry["result"].get("requestId"):
                 saved_buckets[key] = entry["result"]
+            if entry["result"].get("ok"):
+                completed_buckets[key] = entry["result"]
 
         plan["entries"] = entries
         drafts = [_draft_summary(e) for e in entries]
@@ -205,6 +239,7 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                                          "drafts": len(drafts), "saved": len(saved),
                                          "reused": len(reused), "pending": len(pending)})
         return {"plan": plan, "plan_results": drafts, "result": result,
-                "saved_buckets": saved_buckets, "history": history}
+                "saved_buckets": saved_buckets, "completed_buckets": completed_buckets,
+                "history": history}
 
     return execute_plan_node

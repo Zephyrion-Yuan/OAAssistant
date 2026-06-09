@@ -19,6 +19,7 @@ from oa_orchestrator.nodes.apply_corrections import (CorrectionPatch,  # noqa: E
                                                      RouteOverride, WbsEdit,
                                                      apply_corrections_node)
 from oa_orchestrator.nodes.assist import assist_node  # noqa: E402
+from oa_orchestrator.nodes.execute_plan import _bucket_key  # noqa: E402
 from oa_orchestrator.state import (STATUS_FAILED, STATUS_NEEDS_INPUT,  # noqa: E402
                                    STATUS_NEEDS_LOGIN, STATUS_RUNNING)
 
@@ -126,6 +127,49 @@ def test_action_done_rejected_for_data_kind():
         clear_test_responder()
 
 
+def test_retry_failed_draft_without_llm():
+    entry_412 = {
+        "workflow_id": "412", "wbsCode": "C2-0225002.06.01", "transferOutWbs": None,
+        "materialLines": [{"materialCode": "4000059295", "quantity": "2", "unit": "EA"}],
+        "request": {"structured": {"wbsCode": "C2-0225002.06.01"}, "save": False},
+        "result": {"ok": False, "error": "locator.click: Timeout 15000ms exceeded"},
+    }
+    entry_458 = {
+        "workflow_id": "458", "wbsCode": "C2-0225002.06.01", "transferOutWbs": None,
+        "materialLines": [{"materialCode": "4000054215", "quantity": "3", "unit": "EA"}],
+        "request": {"structured": {"wbsCode": "C2-0225002.06.01"}, "save": False},
+        "result": {"ok": True, "summary": {}, "actions": []},
+    }
+    out = apply_corrections_node({
+        "correction": "重试出库流程",
+        "business_input": {"materialPlans": [
+            {"materialCode": "4000059295", "quantity": "2", "unit": "EA"},
+            {"materialCode": "4000054215", "quantity": "3", "unit": "EA"},
+        ], "demandRows": [
+            {"materialCode": "4000059295", "quantity": "2", "unit": "EA", "wbsCode": "C2-0225002.06.01"},
+            {"materialCode": "4000054215", "quantity": "3", "unit": "EA", "wbsCode": "C2-0225002.06.01"},
+        ]},
+        "pending_input": {"kind": "draftReview", "resumeMode": "mixed", "items": [
+            {"workflow_id": "412", "wbsCode": "C2-0225002.06.01",
+             "error": "locator.click: Timeout 15000ms exceeded", "retryable": True},
+        ]},
+        "plan": {"entries": [entry_412, entry_458]},
+        "plan_results": [
+            {"workflow_id": "412", "wbsCode": "C2-0225002.06.01",
+             "materialLines": entry_412["materialLines"], "ok": False},
+            {"workflow_id": "458", "wbsCode": "C2-0225002.06.01",
+             "materialLines": entry_458["materialLines"], "ok": True},
+        ],
+        "thread_id": "t-retry-412",
+    })
+    assert out.get("status") == STATUS_RUNNING, out
+    assert out.get("pending_input") is None, out
+    completed = out.get("completed_buckets") or {}
+    assert _bucket_key(entry_458) in completed, completed
+    assert _bucket_key(entry_412) not in completed, completed
+    print("PASS dialogue: '重试出库流程' -> rerun failed 412 and preserve successful buckets")
+
+
 def test_stock_location_correction_targets_pending_wbs():
     def _stub(schema, system, user):
         return CorrectionPatch(
@@ -150,6 +194,33 @@ def test_stock_location_correction_targets_pending_wbs():
         assert out.get("status") == STATUS_RUNNING, out
         assert out["wbs_overrides"]["C2-0339001.01.01"]["stockLocationSapCode"] == "D002", out
         print("PASS dialogue: stock-location correction patches pending WBS override")
+    finally:
+        clear_test_responder()
+
+
+def test_mrp_controller_correction_targets_pending_wbs():
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=True,
+            wbsEdits=[WbsEdit(mrpController="P22")],
+        ) if schema is CorrectionPatch else None
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "MRP控制者 P22",
+            "business_input": {"materialPlans": [{"materialCode": "4000059295", "quantity": "2", "unit": "EA"}],
+                               "demandRows": [{"materialCode": "4000059295", "quantity": "2", "unit": "EA",
+                                               "wbsCode": "C2-0225002.06.01"}]},
+            "pending_input": {"kind": "mrpController",
+                              "question": "流程 458 采购申请需要必填 MRP控制者",
+                              "missingWbs": ["C2-0225002.06.01"],
+                              "wbsCode": "C2-0225002.06.01",
+                              "resumeMode": "mixed"},
+            "thread_id": "t-mrp",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        assert out["wbs_overrides"]["C2-0225002.06.01"]["mrpController"] == "P22", out
+        print("PASS dialogue: MRP controller correction patches pending WBS override")
     finally:
         clear_test_responder()
 
@@ -274,7 +345,9 @@ def main() -> int:
     test_transient_retry()
     test_action_done_carry_on()
     test_action_done_rejected_for_data_kind()
+    test_retry_failed_draft_without_llm()
     test_stock_location_correction_targets_pending_wbs()
+    test_mrp_controller_correction_targets_pending_wbs()
     test_wbs_correction_fills_blank_demand_rows()
     test_user_department_correction_updates_profile()
     print("\nALL ASSIST OFFLINE TESTS PASSED")

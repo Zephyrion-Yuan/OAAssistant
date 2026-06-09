@@ -51,6 +51,7 @@ class GraphState(TypedDict, total=False):
     wbs_overrides: Dict[str, Dict[str, Any]]   # run-local WBS bound-field patches
     routing_overrides: Dict[str, str]          # material -> "transfer": route other-project stock to 89
     saved_buckets: Dict[str, Any]              # bucketKey -> saved draft result (idempotent rerun)
+    completed_buckets: Dict[str, Any]          # bucketKey -> successful prior result in this thread
 
     # control
     status: str
@@ -96,6 +97,7 @@ def new_state(request: str, excel_path: Optional[str], thread_id: str,
         wbs_overrides={},
         routing_overrides={},
         saved_buckets={},
+        completed_buckets={},
         status=STATUS_RUNNING,
         retries=0,
         history=[],

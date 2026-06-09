@@ -69,6 +69,7 @@
           <span class="hdrfill">数量<button type="button" class="fillbtn" @click="fillColumnFromFirst('quantity')" title="按第一行填充数量列">填充</button></span>
           <span class="hdrfill">单位<button type="button" class="fillbtn" @click="fillColumnFromFirst('unit')" title="按第一行填充单位列">填充</button></span>
           <span class="hdrfill">WBS / 别称<button type="button" class="fillbtn" @click="fillColumnFromFirst('wbsCode')" title="按第一行填充 WBS 列">填充</button></span>
+          <span class="hdrfill">MRP<button type="button" class="fillbtn" @click="fillColumnFromFirst('mrpController')" title="按第一行填充 MRP 控制者列">填充</button></span>
           <span class="hdrfill">工厂<button type="button" class="fillbtn" @click="fillColumnFromFirst('demandFactoryCode')" title="按第一行填充工厂列">填充</button></span>
           <span></span>
         </div>
@@ -78,9 +79,13 @@
           <input v-model="r.quantity" class="sm" />
           <input v-model="r.unit" class="sm" />
           <input v-model="r.wbsCode" placeholder="编码或别称" />
+          <input v-model="r.mrpController" class="sm" list="mrpControllerOptions" placeholder="P22" />
           <input v-model="r.demandFactoryCode" class="sm" />
           <button class="x" @click="demandRows.splice(i,1)" title="删除">×</button>
         </div>
+        <datalist id="mrpControllerOptions">
+          <option v-for="o in optionGroup('oa.mrpController')" :key="o.value" :value="o.value">{{ o.label }}</option>
+        </datalist>
       </div>
       <div class="radd"><button class="ghost" @click="addRow">+ 加一行</button></div>
 
@@ -141,7 +146,9 @@
           <label>需求工厂代码<input v-model="wbsForm.demandFactoryCode" /></label>
           <label>成本中心<input v-model="wbsForm.costCenter" /></label>
           <label>采购人(工号-姓名)<input v-model="wbsForm.purchaser" placeholder="ZN092-张三" /></label>
-          <label>MRP控制者<input v-model="wbsForm.mrpController" /></label>
+          <label>MRP控制者
+            <input v-model="wbsForm.mrpController" list="mrpControllerOptions" placeholder="P22" />
+          </label>
           <p class="full muted small">WBS 默认库存地点：89 转储按转出/转入各自 WBS 读取；414 入库也读取这个字段。</p>
           <label>库存地点名称
             <input v-model="wbsForm.stockLocationName" list="stockLocationNameOptions" />

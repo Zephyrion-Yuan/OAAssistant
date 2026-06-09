@@ -118,8 +118,8 @@ async function clickModalRow(page, modal, expectedText, timeoutMs = 5000) {
     }).first();
     if (await row.isVisible().catch(() => false)) {
       await row.scrollIntoViewIfNeeded().catch(() => {});
-      await row.click();
-      return true;
+      const clicked = await row.click({ timeout: 1200 }).then(() => true).catch(() => false);
+      if (clicked) return true;
     }
     await page.waitForTimeout(100);
   }
@@ -132,8 +132,7 @@ async function clickFirstModalDataRow(page, modal) {
   });
   const firstRow = rows.first();
   if (await firstRow.isVisible().catch(() => false)) {
-    await firstRow.click();
-    return true;
+    return firstRow.click({ timeout: 1200 }).then(() => true).catch(() => false);
   }
   return false;
 }

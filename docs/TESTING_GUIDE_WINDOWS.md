@@ -197,6 +197,20 @@ npm.cmd start
 ```
 
 终端 B、C：沿用 Level 2 的 BFF 和前端启动命令。
+终端 B：BFF 网关，端口 `8788`：
+
+```powershell
+Set-Location D:\Desktop\OAAssistant
+$env:PYTHONPATH = "orchestrator"
+.\.venv\Scripts\python.exe -m uvicorn oa_orchestrator.bff:app --host 127.0.0.1 --port 8788
+```
+
+终端 C：前端静态服务，端口 `5500`：
+
+```powershell
+Set-Location D:\Desktop\OAAssistant\frontend
+..\.venv\Scripts\python.exe -m http.server 5500
+```
 
 登录检查流程：
 

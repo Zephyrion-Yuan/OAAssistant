@@ -49,6 +49,7 @@ _KIND_TRIAGE = {
     "transferInWbs": ("input", RESUME_CORRECT),
     "userDepartment": ("input", RESUME_CORRECT),
     "costCenter": ("input", RESUME_MIXED),
+    "mrpController": ("input", RESUME_MIXED),
     "stockLocation": ("input", RESUME_MIXED),
     "transferOutStockLocation": ("input", RESUME_MIXED),
     "transferInStockLocation": ("input", RESUME_MIXED),

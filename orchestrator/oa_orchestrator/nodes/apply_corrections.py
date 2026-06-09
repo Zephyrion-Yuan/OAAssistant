@@ -26,10 +26,12 @@ from ..llm import require_structured
 from ..schemas import BusinessInput, Profile
 from ..state import STATUS_NEEDS_INPUT, STATUS_RUNNING
 from ._common import RESUME_ACTION, RESUME_MIXED, append_history
+from .execute_plan import _bucket_key
 
 # Notes emitted by the appliers that mean "a change actually landed". Used to
 # decide whether the correction was applied (continue) or not (re-ask).
 _APPLIED_MARKERS = ("已更新", "已改为", "本次运行补充")
+_RETRY_HINTS = ("重试", "重新", "再试", "再跑", "继续", "retry", "rerun", "已处理", "处理好了", "好了")
 
 
 # --------------------------------------------------------------------------- #
@@ -52,6 +54,7 @@ class WbsEdit(BaseModel):
     newWbsCode: str = ""          # replacement WBS
     direction: str = ""            # optional side hint: in/out/转入/转出
     costCenter: str = ""
+    mrpController: str = ""
     stockLocationName: str = ""
     stockLocationSapCode: str = ""
 
@@ -87,6 +90,8 @@ _SYSTEM = (
     "materialEdits=[{materialCode:目标码, useSuggestion:true}]。\n"
     "- 成本中心(如『成本中心 CC-1010-01』): "
     "wbsEdits=[{wbsCode:目标WBS, costCenter:'CC-1010-01'}]。\n"
+    "- MRP控制者(如『MRP控制者 P22』『MRP P22』): "
+    "wbsEdits=[{wbsCode:目标WBS, mrpController:'P22'}]。\n"
     "- 用户部门(如『我的部门是研发三组』『userDepartment=研发三组』): "
     "userDepartment='研发三组'。\n"
     "- 库存地点(如『库存地点 H001』『库存地点名称 实验室仓』『转出库存地点 D002』『C2-0225002.06.01 库存地点 D002』): "
@@ -118,6 +123,69 @@ def _pending_items(pending: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(items, list):
         return [dict(item) for item in items if isinstance(item, dict)]
     return [pending] if pending else []
+
+
+def _wants_retry(text: str, pending: Dict[str, Any]) -> bool:
+    if str(pending.get("kind") or "") != "draftReview":
+        return False
+    lowered = text.lower()
+    return any(hint in lowered or hint in text for hint in _RETRY_HINTS)
+
+
+def _seed_completed_buckets(state: Dict[str, Any]) -> Dict[str, Any]:
+    completed = {str(k): dict(v) for k, v in (state.get("completed_buckets") or {}).items()}
+    plan = state.get("plan") or {}
+    for entry in plan.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        result = entry.get("result") or {}
+        if result.get("ok"):
+            completed[_bucket_key(entry)] = dict(result)
+    for draft in state.get("plan_results") or []:
+        if not isinstance(draft, dict) or not draft.get("ok"):
+            continue
+        completed.setdefault(_bucket_key(draft), {
+            "ok": True,
+            "requestId": draft.get("requestId"),
+            "requestUrl": draft.get("requestUrl"),
+            "summary": {},
+            "actions": [],
+        })
+    return completed
+
+
+def _retry_failed_drafts(state: Dict[str, Any], pending: Dict[str, Any], text: str) -> Dict[str, Any]:
+    workflows = sorted({
+        str(item.get("workflow_id") or item.get("workflow") or "")
+        for item in _pending_items(pending)
+        if item.get("workflow_id") or item.get("workflow")
+    })
+    label = "/".join(workflows) if workflows else "失败"
+    notes = [f"用户要求重试 {label} 草稿，保留已成功草稿并重新执行失败 bucket。"]
+    history = append_history(state, {
+        "node": "apply_corrections",
+        "ok": True,
+        "kind": pending.get("kind") or "draftReview",
+        "actionDone": True,
+        "summary": text,
+        "notes": notes,
+    })
+    correction_history = list(state.get("correction_history") or [])
+    correction_history.append({
+        "kind": pending.get("kind") or "draftReview",
+        "answer": text,
+        "summary": "retry failed draft",
+        "notes": notes,
+        "applied": False,
+        "actionDone": True,
+    })
+    updates = _clear_for_rerun(notes)
+    updates.update({
+        "history": history,
+        "correction_history": correction_history,
+        "completed_buckets": _seed_completed_buckets(state),
+    })
+    return updates
 
 
 def _as_decimal(value: Any) -> Decimal:
@@ -426,6 +494,7 @@ def _apply_patch(
     for edit in patch.wbsEdits:
         new_wbs = (edit.newWbsCode or "").strip()
         cost_center = (edit.costCenter or "").strip()
+        mrp_controller = (edit.mrpController or "").strip()
         loc_name = (edit.stockLocationName or "").strip()
         loc_sap = (edit.stockLocationSapCode or "").strip()
 
@@ -449,11 +518,11 @@ def _apply_patch(
             if not targets:
                 notes.append("存在多个可能的 WBS，请明确库存地点要维护到哪个 WBS")
                 continue
-        elif cost_center:
+        elif cost_center or mrp_controller:
             candidates = _pending_wbs_values(pending, missing_only=True) or _pending_wbs_values(pending) or _business_wbs_values(business)
             targets = candidates if len(candidates) == 1 else []
             if not targets:
-                notes.append("存在多个可能的 WBS，请明确成本中心要维护到哪个 WBS")
+                notes.append("存在多个可能的 WBS，请明确要维护到哪个 WBS")
                 continue
         else:
             wbs = (edit.wbsCode or "").strip() or str(business.get("wbsCode") or "")
@@ -467,6 +536,9 @@ def _apply_patch(
             if cost_center:
                 patch_fields["costCenter"] = cost_center
                 notes.append(f"WBS {wbs} 本次运行补充成本中心 {cost_center}")
+            if mrp_controller:
+                patch_fields["mrpController"] = mrp_controller
+                notes.append(f"WBS {wbs} 本次运行补充 MRP控制者 {mrp_controller}")
             if loc_name:
                 patch_fields["stockLocationName"] = loc_name
                 notes.append(f"WBS {wbs} 本次运行补充库存地点名称 {loc_name}")
@@ -489,7 +561,7 @@ def _interpret(pending: Dict[str, Any], business: Dict[str, Any], text: str) -> 
     candidate_keys = ("materialCode", "demandQuantity", "demandUnit", "baseUnit",
                       "suggestedQuantity", "suggestedUnit", "wbsCode",
                       "transferInWbs", "transferOutWbs", "missingWbs",
-                      "missingStockLocationSides")
+                      "missingStockLocationSides", "mrpController")
     context = {
         "kind": pending.get("kind"),
         "question": pending.get("question"),
@@ -547,13 +619,14 @@ def _reask(
         "material": "示例: “9999999999 改成 4000023659”。",
         "userDepartment": "示例: “我的部门是研发三组” 或 “userDepartment=研发三组”。",
         "costCenter": "示例: “成本中心 CC-1010-01”。",
+        "mrpController": "示例: “MRP控制者 P22” 或 “C2-0225002.06.01 MRP控制者 P22”。",
         "stockLocation": "示例: “库存地点 H001”、“转出库存地点 D002” 或 “C2-0225002.06.01 库存地点 D002”。",
         "transferOutStockLocation": "示例: “转出库存地点 D002” 或 “C2-0339001.01.01 库存地点 D002”。",
         "transferInStockLocation": "示例: “转入库存地点 A001” 或 “C2-0225002.06.01 库存地点 A001”。",
         "wbs": "示例: “WBS 改成 C2-0225002.06.01”。",
         "transferInWbs": "示例: “转入 WBS 改成 C2-0225002.06.01”。",
         "transferOutWbs": "示例: “转出 WBS C2-0339001.01.01”。",
-        "draftReview": "示例: “成本中心 CC-1010-01” 或 “C2-0225002.06.01 库存地点 H001”。",
+        "draftReview": "示例: “MRP控制者 P22”、“成本中心 CC-1010-01” 或 “C2-0225002.06.01 库存地点 H001”。",
     }
     parked = dict(pending)
     parked["question"] = (
@@ -595,6 +668,8 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
         return _reask(state, {}, kind, ["当前线程没有待补充问题，这条输入没有作为修正应用"])
     if not business:
         return _reask(state, pending, kind, ["当前线程缺少可修正的结构化需求，请重新发起需求"])
+    if _wants_retry(text, pending):
+        return _retry_failed_drafts(state, pending, text)
 
     try:
         patch = _interpret(pending, business, text)

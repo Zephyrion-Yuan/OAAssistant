@@ -31,6 +31,11 @@ class CountingExec:
                                requestUrl=f"url/{wbs}", summary={}, actions=[])
 
 
+class FailingExec:
+    def fill_outbound(self, request) -> ExecutionResult:
+        raise TimeoutError("locator.click: Timeout 15000ms exceeded")
+
+
 def _entry(wbs: str, qty: str) -> dict:
     return {
         "workflow_id": "412", "wbsCode": wbs, "transferOutWbs": None,
@@ -78,6 +83,17 @@ def main() -> int:
     assert exec3.calls == ["W1"], exec3.calls
     assert out3["result"]["drafts"][0]["reused"] is False, out3["result"]
     print("PASS dry-run ignores saved_buckets (always executes)")
+
+    # 4) hard executor errors become resumable draftReview input, not terminal abort
+    exec4 = FailingExec()
+    out4 = make_execute_plan(exec4)({
+        "plan": {"entries": [_entry("W3", "2")]}, "save": False,
+        "history": [],
+    })
+    assert out4["result"]["needsInput"] is True, out4["result"]
+    assert out4["result"]["input"]["kind"] == "draftReview", out4["result"]["input"]
+    assert "locator.click" in out4["result"]["input"]["error"], out4["result"]["input"]
+    print("PASS hard draft execution error -> resumable draftReview input")
 
     print("\nALL IDEMPOTENCY OFFLINE TESTS PASSED")
     return 0

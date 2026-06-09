@@ -212,6 +212,22 @@ def main() -> int:
     assert sparse_data[18] == "苏州工业园区玲珑街88号" and sparse_data[19] == "紧急", sparse_data
     print("PASS sparse 458 demand -> attachment backfilled name/unit/project/MRP/address/WBS remark")
 
+    # 3d) 458 MRP控制者 is mandatory: if neither row nor WBS binding provides it,
+    # prepare parks the draft instead of generating an attachment with a blank MRP.
+    saved_demand_mrp = dict(mockmod._WBS_REGISTRY[DEMAND_WBS])
+    try:
+        mockmod._WBS_REGISTRY[DEMAND_WBS] = {**saved_demand_mrp, "mrpController": ""}
+        mockmod._INVENTORY["4000059295"] = []
+        missing_mrp = run(graph, excel=make_workbook([
+            ["1010", DEMAND_WBS, "", "4000059295", "", 1, "", ""],
+        ]), thread="router-458-missing-mrp", save=True)
+        assert missing_mrp.get("status") == STATUS_NEEDS_INPUT, missing_mrp.get("status")
+        d458_mrp = next(d for d in missing_mrp["result"]["drafts"] if d["workflow_id"] == "458")
+        assert d458_mrp["skipped"] and d458_mrp["needsInput"]["kind"] == "mrpController", d458_mrp
+        print("PASS 458 missing MRP控制者 -> needs_input, no blank-MRP attachment")
+    finally:
+        mockmod._WBS_REGISTRY[DEMAND_WBS] = saved_demand_mrp
+
     # 4) WBS bucketing: same material, two WBS -> separate 458 drafts
     out2 = run(graph, excel=make_workbook([
         ["1010", DEMAND_WBS, "C2-0225002", "9999999999", "无库存物料", 4, "EA", "M01"],

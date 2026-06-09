@@ -3,7 +3,15 @@
 const { createApp } = Vue;
 
 function blankDemandRow(values = {}) {
-  return Object.assign({ materialCode: '', materialName: '', quantity: '', unit: '', wbsCode: '', demandFactoryCode: '' }, values);
+  return Object.assign({
+    materialCode: '',
+    materialName: '',
+    quantity: '',
+    unit: '',
+    wbsCode: '',
+    mrpController: '',
+    demandFactoryCode: '',
+  }, values);
 }
 
 function blankWbs() {
@@ -167,6 +175,7 @@ createApp({
   },
   mounted() {
     this.ping();
+    this.loadOptionCatalog();
     const self = this;
     customElements.whenDefined('deep-chat').then(() => {
       const dc = self.$refs.dc;
@@ -176,9 +185,87 @@ createApp({
       dc.messageStyles = { default: { ai: { bubble: { backgroundColor: '#f6f8fc', color: '#1b2435' } }, user: { bubble: { backgroundColor: '#2563eb' } } } };
       dc.history = [{ role: 'ai', html: self.intro() }];
       dc.connect = { stream: true, handler: (body, signals) => self.chatHandler(body, signals) };
+      self.installChatScroller(dc);
+      self.deferChatScroll();
     });
   },
   methods: {
+    installChatScroller(dc) {
+      const apply = () => {
+        const root = dc?.shadowRoot;
+        if (!root) return false;
+        if (!root.getElementById('oa-chat-scroll-style')) {
+          const style = document.createElement('style');
+          style.id = 'oa-chat-scroll-style';
+          style.textContent = `
+            #container {
+              height: 100% !important;
+              max-height: 100% !important;
+              min-height: 0 !important;
+              overflow: hidden !important;
+            }
+            #chat-view {
+              height: 100% !important;
+              max-height: 100% !important;
+              min-height: 0 !important;
+              display: grid !important;
+              grid-template-rows: minmax(0, 1fr) auto !important;
+              overflow: hidden !important;
+            }
+            #messages {
+              height: auto !important;
+              min-height: 0 !important;
+              overflow-y: scroll !important;
+              overflow-x: hidden !important;
+              scrollbar-gutter: stable;
+              scrollbar-width: auto;
+              scrollbar-color: #c3ccda #f8fafc;
+            }
+            #messages::-webkit-scrollbar {
+              width: 12px;
+            }
+            #messages::-webkit-scrollbar-track {
+              background: #f8fafc;
+              border-radius: 8px;
+            }
+            #messages::-webkit-scrollbar-thumb {
+              background: #c3ccda;
+              border-radius: 8px;
+              border: 2px solid #f8fafc;
+            }
+          `;
+          root.appendChild(style);
+        }
+        if (this._chatScrollObserver) this._chatScrollObserver.disconnect();
+        this._chatScrollObserver = new MutationObserver(() => this.deferChatScroll());
+        this._chatScrollObserver.observe(root, { childList: true, subtree: true, characterData: true });
+        this.deferChatScroll();
+        return true;
+      };
+      if (!apply()) setTimeout(apply, 250);
+      setTimeout(apply, 1000);
+    },
+    deferChatScroll() {
+      requestAnimationFrame(() => {
+        this.scrollChatToBottom();
+        setTimeout(() => this.scrollChatToBottom(), 40);
+      });
+    },
+    scrollChatToBottom() {
+      const dc = this.$refs.dc;
+      const root = dc?.shadowRoot;
+      const targets = new Set();
+      const add = (el) => {
+        if (el && el.scrollHeight > el.clientHeight) targets.add(el);
+      };
+      add(root?.getElementById('messages'));
+      add(dc);
+      root?.querySelectorAll?.('*').forEach((el) => {
+        const style = getComputedStyle(el);
+        if (/(auto|scroll)/.test(style.overflowY) && el.clientHeight > 80) add(el);
+      });
+      targets.forEach((el) => { el.scrollTop = el.scrollHeight; });
+    },
     persist() { localStorage.setItem('oaa.bff', this.bff); },
     async api(path, method = 'GET', body = null) {
       const opt = { method, headers: { 'Content-Type': 'application/json; charset=utf-8' } };
@@ -258,6 +345,7 @@ createApp({
           quantity: normalizeQuantityText(row.quantity) || normalizeCell(row.quantity),
           unit: normalizeCell(row.unit),
           wbsCode: normalizeCell(row.wbsCode),
+          mrpController: normalizeCell(row.mrpController),
           demandFactoryCode: normalizeCell(row.demandFactoryCode),
         }))
         .filter((row) => row.materialCode);
@@ -367,6 +455,7 @@ createApp({
         const demandRows = this.requestRows();
         if (!demandRows.length) {
           try { signals.onResponse({ html: '<div style="color:#b42318">请先填写物料编码，或在上方开启「AI 下单」用自然语言描述。</div>' }); } catch (_) {}
+          this.deferChatScroll();
           signals.onClose(); this.busy = false; return;
         }
         endpoint = '/api/chat';
@@ -375,7 +464,7 @@ createApp({
 
       const nodes = [];
       let head = '', tail = '';
-      const push = () => { const html = head + this.progressHtml(nodes) + tail; try { signals.onResponse({ html, overwrite: true }); } catch (e) { try { signals.onResponse({ html }); } catch (_) {} } };
+      const push = () => { const html = head + this.progressHtml(nodes) + tail; try { signals.onResponse({ html, overwrite: true }); } catch (e) { try { signals.onResponse({ html }); } catch (_) {} } this.deferChatScroll(); };
       try {
         const resp = await fetch(this.bff + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
@@ -405,7 +494,8 @@ createApp({
     fillFormFromDemand(ev) {
       const rows = (ev.demandRows || []).map((r) => blankDemandRow({
         materialCode: r.materialCode || '', materialName: r.materialName || '', quantity: String(r.quantity || ''),
-        unit: r.unit || 'EA', wbsCode: r.wbsCode || '', demandFactoryCode: r.demandFactoryCode || '' }));
+        unit: r.unit || 'EA', wbsCode: r.wbsCode || '', mrpController: r.mrpController || '',
+        demandFactoryCode: r.demandFactoryCode || '' }));
       if (rows.length) this.demandRows = rows;
     },
     clarifyHtml(ev) {

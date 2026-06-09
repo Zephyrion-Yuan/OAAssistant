@@ -103,6 +103,14 @@ def _stock_location_question(entry: Dict[str, Any], missing: List[Dict[str, str]
     )
 
 
+def _mrp_controller_question(entry: Dict[str, Any], wbs_code: str) -> str:
+    return (
+        f"流程 458 采购申请需要必填 MRP控制者，当前 WBS {wbs_code} 未维护该字段。"
+        f"涉及物料：{_material_text(entry)}。请在配置 -> WBS 管理中维护 MRP控制者，"
+        "或直接回复“MRP控制者 P22”。"
+    )
+
+
 def _factory(entry: Dict[str, Any], bound: Dict[str, Any]) -> str:
     return entry.get("demandFactoryCode") or bound.get("demandFactoryCode") or ""
 
@@ -363,6 +371,13 @@ def make_prepare(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                     if not wbs_code:
                         entry = _skip(entry, "wbs", _missing_wbs_question(entry, "采购申请 WBS 编码"),
                                       {"missingWbs": [""]})
+                    elif not mrp:
+                        entry = _skip(
+                            entry,
+                            "mrpController",
+                            _mrp_controller_question(entry, wbs_code),
+                            {"missingWbs": [wbs_code]},
+                        )
                     else:
                         offset = bound.get("demandDateOffsetDays")
                         offset = int(offset) if offset not in (None, "") else 5
