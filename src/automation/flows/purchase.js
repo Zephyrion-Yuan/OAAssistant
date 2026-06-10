@@ -17,6 +17,7 @@ import { optionDefault } from '../optionCatalog.js';
 // the CLI wrapper closes it in finally).
 
 const purchaseRuntimeDir = path.join(runtimeDir, 'purchase-requests');
+const activePurchaseRuntimes = new Map();
 const DEFAULT_PURCHASE_TYPE = '项目物资采购申请';
 const DEFAULT_PROJECT_TYPE = '是';
 const DEFAULT_WBS_AUTOFILL_TIMEOUT_MS = 20000;
@@ -362,7 +363,7 @@ async function writeFailureArtifact(page, recorder, error) {
  * input = {
  *   structured: { projectDefinition, wbsCode, demandFactoryCode, demandCompanyName,
  *                 targetDemandDate, normalizedPath },
- *   url?, purchaseType?, projectType?, loginTimeoutMs?, save: boolean
+ *   url?, purchaseType?, projectType?, loginTimeoutMs?, runtimeKey?, save: boolean
  * }
  *
  * `structured.normalizedPath` must point at an existing normalized attachment
@@ -374,6 +375,8 @@ async function writeFailureArtifact(page, recorder, error) {
 export async function runPurchase(input = {}) {
   let page = null;
   let recorder = null;
+  let runtime = null;
+  const runtimeKey = input.runtimeKey ? String(input.runtimeKey) : '';
   try {
     const excel = input.structured;
     if (!excel || !excel.normalizedPath) {
@@ -395,12 +398,40 @@ export async function runPurchase(input = {}) {
     const save = Boolean(input.save);
 
     const pageConfig = resolveOaPage({ pageId: 'oa-workflow-458', url: input.url });
-    page = await edgeSession.newPage();
-    recorder = attachSafeNetworkRecorder(page);
-    const actions = [];
+    if (runtimeKey) {
+      runtime = activePurchaseRuntimes.get(runtimeKey) || null;
+      if (runtime?.page?.isClosed?.()) {
+        activePurchaseRuntimes.delete(runtimeKey);
+        runtime = null;
+      }
+    }
 
-    await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
-    await waitForSettledPage(page);
+    if (!runtime) {
+      page = await edgeSession.newPage();
+      recorder = attachSafeNetworkRecorder(page);
+      runtime = {
+        key: runtimeKey,
+        page,
+        recorder,
+        actions: [],
+        stepDetails: {},
+        createdAt: new Date().toISOString(),
+        resumedCount: 0
+      };
+      if (runtimeKey) activePurchaseRuntimes.set(runtimeKey, runtime);
+
+      await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
+      await waitForSettledPage(page);
+    } else {
+      page = runtime.page;
+      recorder = runtime.recorder;
+      runtime.resumedCount = (runtime.resumedCount || 0) + 1;
+      await waitForSettledPage(page).catch(() => {});
+    }
+
+    const actions = runtime.actions;
+    const stepDetails = runtime.stepDetails;
+
     let login = await detectLoginPage(page);
     if (login.requiresLogin && loginTimeoutMs > 0) {
       const stillRequiresLogin = await waitForLoginRecovery(page, loginTimeoutMs);
@@ -412,13 +443,20 @@ export async function runPurchase(input = {}) {
       throw new Error('OA page requires login. Complete manual login in the managed Edge profile first.');
     }
 
-    async function step(name, fn) {
+    async function step(key, name, fn) {
+      if (Object.prototype.hasOwnProperty.call(stepDetails, key)) {
+        return stepDetails[key];
+      }
       recorder.setPhase(name);
       const startedCount = recorder.count();
       const startedAt = new Date().toISOString();
       try {
         const detail = await fn();
+        stepDetails[key] = detail;
+        runtime.lastCompletedStep = { key, name, finishedAt: new Date().toISOString() };
+        runtime.failedStep = null;
         const action = {
+          key,
           name,
           ok: true,
           startedAt,
@@ -429,7 +467,9 @@ export async function runPurchase(input = {}) {
         actions.push(action);
         return detail;
       } catch (error) {
+        runtime.failedStep = { key, name, failedAt: new Date().toISOString(), error: error.message };
         actions.push({
+          key,
           name,
           ok: false,
           error: error.message,
@@ -441,26 +481,26 @@ export async function runPurchase(input = {}) {
       }
     }
 
-    await step(`Set 是否为项目型 = ${projectType}`, async () => {
+    await step('projectType', `Set 是否为项目型 = ${projectType}`, async () => {
       await selectDropdownOption(page, '#weaSelect_1 div[role="combobox"]', projectType);
     });
-    await step(`Select WBS ${excel.wbsCode}`, async () => {
+    await step('wbs', `Select WBS ${excel.wbsCode}`, async () => {
       await selectWbs(page, excel.wbsCode);
     });
-    await step('Wait for WBS linked autofill', async () => {
+    await step('wbsAutofill', 'Wait for WBS linked autofill', async () => {
       return waitForWbsAutofill(page, excel, wbsAutofillTimeoutMs);
     });
-    await step(`Set 采购类型 = ${purchaseType}`, async () => {
+    await step('purchaseType', `Set 采购类型 = ${purchaseType}`, async () => {
       await selectDropdownOption(page, '#weaSelect_2 div[role="combobox"]', purchaseType);
     });
-    await step(`Select 需求公司 ${excel.demandFactoryCode}`, async () => {
+    await step('demandCompany', `Select 需求公司 ${excel.demandFactoryCode}`, async () => {
       await selectDemandCompany(page, excel.demandFactoryCode, excel.demandCompanyName);
     });
-    await step('Upload normalized Excel attachment', async () => {
+    await step('attachment', 'Upload normalized Excel attachment', async () => {
       await uploadAttachment(page, excel.normalizedPath);
     });
     if (save) {
-      await step('Click 保存', async () => {
+      await step('save', 'Click 保存', async () => {
         await clickSave(page);
       });
     }
@@ -485,7 +525,9 @@ export async function runPurchase(input = {}) {
       parameters: {
         projectType,
         purchaseType,
-        save
+        save,
+        runtimeKey: runtimeKey || null,
+        resumedCount: runtime.resumedCount || 0
       },
       actions,
       finalSurface,
@@ -496,6 +538,7 @@ export async function runPurchase(input = {}) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const reportPath = path.join(purchaseRuntimeDir, `${stamp}-oa-purchase-from-excel.json`);
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
+    if (runtimeKey) activePurchaseRuntimes.delete(runtimeKey);
     return {
       ok: true,
       reportPath,
@@ -512,11 +555,26 @@ export async function runPurchase(input = {}) {
         projectType,
         wbsAutofillTimeoutMs,
         saved: save,
-        actionCount: actions.length
+        actionCount: actions.length,
+        runtimeKey: runtimeKey || null,
+        resumedCount: runtime.resumedCount || 0
       },
       actions
     };
   } catch (error) {
+    if (runtimeKey && runtime) {
+      runtime.lastErrorAt = new Date().toISOString();
+      runtime.lastError = error.message;
+      if (error instanceof NeedInputError) {
+        error.payload = {
+          ...(error.payload || {}),
+          runtimeKey,
+          failedStep: runtime.failedStep || null,
+          lastCompletedStep: runtime.lastCompletedStep || null,
+          resumableRuntime: true
+        };
+      }
+    }
     error.artifact = await writeFailureArtifact(page, recorder, error).catch(() => null);
     throw error;
   }

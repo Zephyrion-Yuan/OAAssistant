@@ -16,10 +16,11 @@ os.environ["DEEPSEEK_API_KEY"] = ""  # offline: assist guidance -> deterministic
 
 from oa_orchestrator.llm import clear_test_responder, set_test_responder  # noqa: E402
 from oa_orchestrator.nodes.apply_corrections import (CorrectionPatch,  # noqa: E402
-                                                     RouteOverride, WbsEdit,
+                                                     MaterialEdit, RouteOverride, WbsEdit,
                                                      apply_corrections_node)
 from oa_orchestrator.nodes.assist import assist_node  # noqa: E402
 from oa_orchestrator.nodes.execute_plan import _bucket_key  # noqa: E402
+from oa_orchestrator.nodes.unit_check import UnitJudgment, unit_check_node  # noqa: E402
 from oa_orchestrator.state import (STATUS_FAILED, STATUS_NEEDS_INPUT,  # noqa: E402
                                    STATUS_NEEDS_LOGIN, STATUS_RUNNING)
 
@@ -46,12 +47,167 @@ def test_structured_needs_input_preserved():
     print("PASS assist: structured needs_input preserves kind/items, sets resumeMode")
 
 
-def test_wbs_autofill_is_action():
+def test_unit_check_keeps_every_mismatched_unit_even_if_llm_marks_consistent():
+    calls = []
+
+    def _stub(schema, system, user):
+        if schema is UnitJudgment:
+            calls.append(user)
+            return UnitJudgment(
+                consistent=True,
+                suggestedUnit="EA",
+                suggestedQuantity="1",
+                reason="maybe equivalent",
+            )
+        return None
+
+    set_test_responder(_stub)
+    try:
+        out = unit_check_node({
+            "business_input": {"materialPlans": [
+                {"materialCode": "MAT-A", "materialName": "A", "quantity": "2", "unit": "BOX"},
+                {"materialCode": "MAT-B", "materialName": "B", "quantity": "3", "unit": "PACK"},
+            ]},
+            "pdm": {"enriched": {
+                "MAT-A": {"unit": "EA", "materialName": "A", "fields": {}},
+                "MAT-B": {"unit": "EA", "materialName": "B", "fields": {}},
+            }},
+        })
+        items = out["result"]["input"]["items"]
+        assert [item["materialCode"] for item in items] == ["MAT-A", "MAT-B"], out
+        assert len(calls) == 2, calls
+        assert all(item.get("llmConsistent") is True for item in items), items
+        print("PASS unit_check: all mismatched units remain visible for review")
+    finally:
+        clear_test_responder()
+
+
+def test_unit_review_accepts_all_suggestions_via_llm():
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=True,
+            materialEdits=[
+                MaterialEdit(materialCode="MAT-A", useSuggestion=True),
+                MaterialEdit(materialCode="MAT-B", useSuggestion=True),
+            ],
+        ) if schema is CorrectionPatch else None
+
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "按建议修改",
+            "business_input": {"materialPlans": [
+                {"materialCode": "MAT-A", "quantity": "2", "unit": "BOX"},
+                {"materialCode": "MAT-B", "quantity": "3", "unit": "PACK"},
+            ], "demandRows": [
+                {"materialCode": "MAT-A", "quantity": "2", "unit": "BOX", "wbsCode": "C2-0225002.06.01"},
+                {"materialCode": "MAT-B", "quantity": "3", "unit": "PACK", "wbsCode": "C2-0225002.06.01"},
+            ]},
+            "pending_input": {"kind": "unitReview", "resumeMode": "correct", "items": [
+                {"materialCode": "MAT-A", "suggestedQuantity": "20", "suggestedUnit": "EA"},
+                {"materialCode": "MAT-B", "suggestedQuantity": "30", "suggestedUnit": "EA"},
+            ]},
+            "thread_id": "t-unit-all",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        rows = {row["materialCode"]: row for row in out["business_input"]["demandRows"]}
+        assert rows["MAT-A"]["quantity"] == "20" and rows["MAT-A"]["unit"] == "EA", rows
+        assert rows["MAT-B"]["quantity"] == "30" and rows["MAT-B"]["unit"] == "EA", rows
+        plans = {plan["materialCode"]: plan for plan in out["business_input"]["materialPlans"]}
+        assert plans["MAT-A"]["quantity"] == "20" and plans["MAT-A"]["unit"] == "EA", plans
+        assert plans["MAT-B"]["quantity"] == "30" and plans["MAT-B"]["unit"] == "EA", plans
+        print("PASS dialogue: LLM patch applies every pending unit suggestion")
+    finally:
+        clear_test_responder()
+
+
+def test_plain_wbs_reply_updates_project_code_block_via_llm():
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=True,
+            wbsEdits=[WbsEdit(newWbsCode="C2-0225002.06.01")],
+        ) if schema is CorrectionPatch else None
+
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "C2-0225002.06.01",
+            "business_input": {"materialPlans": [{"materialCode": "MAT-A", "quantity": "2", "unit": "EA"}],
+                               "demandRows": [{"materialCode": "MAT-A", "quantity": "2", "unit": "EA",
+                                               "wbsCode": ""}]},
+            "pending_input": {"kind": "projectCode",
+                              "question": "workflow 412 needs a project code",
+                              "resumeMode": "mixed"},
+            "thread_id": "t-project-wbs",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        assert out["business_input"]["demandRows"][0]["wbsCode"] == "C2-0225002.06.01", out
+        print("PASS dialogue: LLM patch refills a project-code block with WBS")
+    finally:
+        clear_test_responder()
+
+
+def test_project_code_action_done_via_llm():
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=False,
+            userReportsActionDone=True,
+        ) if schema is CorrectionPatch else None
+
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "已处理",
+            "business_input": {"materialPlans": [{"materialCode": "MAT-A", "quantity": "2", "unit": "EA"}],
+                               "demandRows": [{"materialCode": "MAT-A", "quantity": "2", "unit": "EA",
+                                               "wbsCode": "C2-0225002.06.01"}]},
+            "pending_input": {"kind": "projectCode",
+                              "question": "fix project code in OA",
+                              "resumeMode": "mixed"},
+            "thread_id": "t-project-done",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        assert "business_input" not in out, out
+        assert out["correction_history"][-1]["actionDone"] is True, out
+        print("PASS dialogue: LLM patch resumes a project-code block after external action")
+    finally:
+        clear_test_responder()
+
+
+def test_project_code_value_confirmation_via_llm():
+    def _stub(schema, system, user):
+        return CorrectionPatch(
+            actionable=False,
+            userConfirmsPendingValue=True,
+        ) if schema is CorrectionPatch else None
+
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "确认，WBS号正确",
+            "business_input": {"materialPlans": [{"materialCode": "MAT-A", "quantity": "2", "unit": "EA"}],
+                               "demandRows": [{"materialCode": "MAT-A", "quantity": "2", "unit": "EA",
+                                               "wbsCode": "C2-0225002.06.01"}]},
+            "pending_input": {"kind": "projectCode",
+                              "question": "请确认 WBS 号是否正确",
+                              "wbsCode": "C2-0225002.06.01",
+                              "resumeMode": "mixed"},
+            "thread_id": "t-project-confirm",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        assert "business_input" not in out, out
+        assert out["correction_history"][-1]["valueConfirmed"] is True, out
+        print("PASS dialogue: LLM value confirmation resumes a WBS/project-code block")
+    finally:
+        clear_test_responder()
+
+
+def test_wbs_autofill_is_mixed():
     pending = {"kind": "wbsAutofill", "question": "OA 未回填项目联动字段", "wbsCode": "C2-x"}
     out = assist_node({"status": STATUS_RUNNING,
                        "result": {"ok": False, "needsInput": True, "input": pending}})
-    assert out["pending_input"]["resumeMode"] == "action", out  # go check the WBS in OA
-    print("PASS assist: wbsAutofill -> action (guide the user to fix the WBS)")
+    assert out["pending_input"]["resumeMode"] == "mixed", out
+    print("PASS assist: wbsAutofill -> mixed (accept WBS reply or external fix)")
 
 
 def test_preserve_structured_stock_location_question():
@@ -127,7 +283,10 @@ def test_action_done_rejected_for_data_kind():
         clear_test_responder()
 
 
-def test_retry_failed_draft_without_llm():
+def test_retry_failed_draft_via_llm():
+    def _stub(schema, system, user):
+        return CorrectionPatch(retryFailedDrafts=True) if schema is CorrectionPatch else None
+
     entry_412 = {
         "workflow_id": "412", "wbsCode": "C2-0225002.06.01", "transferOutWbs": None,
         "materialLines": [{"materialCode": "4000059295", "quantity": "2", "unit": "EA"}],
@@ -140,34 +299,38 @@ def test_retry_failed_draft_without_llm():
         "request": {"structured": {"wbsCode": "C2-0225002.06.01"}, "save": False},
         "result": {"ok": True, "summary": {}, "actions": []},
     }
-    out = apply_corrections_node({
-        "correction": "重试出库流程",
-        "business_input": {"materialPlans": [
-            {"materialCode": "4000059295", "quantity": "2", "unit": "EA"},
-            {"materialCode": "4000054215", "quantity": "3", "unit": "EA"},
-        ], "demandRows": [
-            {"materialCode": "4000059295", "quantity": "2", "unit": "EA", "wbsCode": "C2-0225002.06.01"},
-            {"materialCode": "4000054215", "quantity": "3", "unit": "EA", "wbsCode": "C2-0225002.06.01"},
-        ]},
-        "pending_input": {"kind": "draftReview", "resumeMode": "mixed", "items": [
-            {"workflow_id": "412", "wbsCode": "C2-0225002.06.01",
-             "error": "locator.click: Timeout 15000ms exceeded", "retryable": True},
-        ]},
-        "plan": {"entries": [entry_412, entry_458]},
-        "plan_results": [
-            {"workflow_id": "412", "wbsCode": "C2-0225002.06.01",
-             "materialLines": entry_412["materialLines"], "ok": False},
-            {"workflow_id": "458", "wbsCode": "C2-0225002.06.01",
-             "materialLines": entry_458["materialLines"], "ok": True},
-        ],
-        "thread_id": "t-retry-412",
-    })
-    assert out.get("status") == STATUS_RUNNING, out
-    assert out.get("pending_input") is None, out
-    completed = out.get("completed_buckets") or {}
-    assert _bucket_key(entry_458) in completed, completed
-    assert _bucket_key(entry_412) not in completed, completed
-    print("PASS dialogue: '重试出库流程' -> rerun failed 412 and preserve successful buckets")
+    set_test_responder(_stub)
+    try:
+        out = apply_corrections_node({
+            "correction": "重试出库流程",
+            "business_input": {"materialPlans": [
+                {"materialCode": "4000059295", "quantity": "2", "unit": "EA"},
+                {"materialCode": "4000054215", "quantity": "3", "unit": "EA"},
+            ], "demandRows": [
+                {"materialCode": "4000059295", "quantity": "2", "unit": "EA", "wbsCode": "C2-0225002.06.01"},
+                {"materialCode": "4000054215", "quantity": "3", "unit": "EA", "wbsCode": "C2-0225002.06.01"},
+            ]},
+            "pending_input": {"kind": "draftReview", "resumeMode": "mixed", "items": [
+                {"workflow_id": "412", "wbsCode": "C2-0225002.06.01",
+                 "error": "locator.click: Timeout 15000ms exceeded", "retryable": True},
+            ]},
+            "plan": {"entries": [entry_412, entry_458]},
+            "plan_results": [
+                {"workflow_id": "412", "wbsCode": "C2-0225002.06.01",
+                 "materialLines": entry_412["materialLines"], "ok": False},
+                {"workflow_id": "458", "wbsCode": "C2-0225002.06.01",
+                 "materialLines": entry_458["materialLines"], "ok": True},
+            ],
+            "thread_id": "t-retry-412",
+        })
+        assert out.get("status") == STATUS_RUNNING, out
+        assert out.get("pending_input") is None, out
+        completed = out.get("completed_buckets") or {}
+        assert _bucket_key(entry_458) in completed, completed
+        assert _bucket_key(entry_412) not in completed, completed
+        print("PASS dialogue: LLM retry intent -> rerun failed 412 and preserve successful buckets")
+    finally:
+        clear_test_responder()
 
 
 def test_stock_location_correction_targets_pending_wbs():
@@ -337,7 +500,12 @@ def test_user_department_correction_updates_profile():
 def main() -> int:
     test_login()
     test_structured_needs_input_preserved()
-    test_wbs_autofill_is_action()
+    test_unit_check_keeps_every_mismatched_unit_even_if_llm_marks_consistent()
+    test_unit_review_accepts_all_suggestions_via_llm()
+    test_plain_wbs_reply_updates_project_code_block_via_llm()
+    test_project_code_action_done_via_llm()
+    test_project_code_value_confirmation_via_llm()
+    test_wbs_autofill_is_mixed()
     test_preserve_structured_stock_location_question()
     test_wbs_correction_fills_only_the_blank_bucket()
     test_routing_override_to_transfer()
@@ -345,7 +513,7 @@ def main() -> int:
     test_transient_retry()
     test_action_done_carry_on()
     test_action_done_rejected_for_data_kind()
-    test_retry_failed_draft_without_llm()
+    test_retry_failed_draft_via_llm()
     test_stock_location_correction_targets_pending_wbs()
     test_mrp_controller_correction_targets_pending_wbs()
     test_wbs_correction_fills_blank_demand_rows()

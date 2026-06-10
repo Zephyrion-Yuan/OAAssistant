@@ -8,6 +8,8 @@ per-draft plan_results that finalize writes into the run audit.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Callable, Dict
 
 from ..schemas import (ExecutionResult, FillRequest, InboundFillRequest,
@@ -40,6 +42,14 @@ def _bucket_key(entry: Dict[str, Any]) -> str:
         str(entry.get("transferOutWbs") or ""),
         sig,
     ])
+
+
+def _runtime_key(state: Dict[str, Any], bucket_key: str, request_payload: Dict[str, Any]) -> str:
+    payload = {k: v for k, v in request_payload.items() if k != "runtimeKey"}
+    signature = hashlib.sha1(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{state.get('thread_id') or 'thread'}::{bucket_key}::{signature}"
 
 
 def _draft_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -192,7 +202,13 @@ def make_execute_plan(executor) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
                 continue
             method_name, model_cls = mapping
             try:
-                request = model_cls.model_validate(entry["request"])
+                request_payload = dict(entry["request"])
+                request_payload.setdefault(
+                    "runtimeKey",
+                    _runtime_key(state, key, request_payload),
+                )
+                entry["request"] = request_payload
+                request = model_cls.model_validate(request_payload)
                 result: ExecutionResult = getattr(executor, method_name)(request)
                 entry["result"] = result.model_dump()
             except Exception as exc:  # noqa: BLE001

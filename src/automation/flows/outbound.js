@@ -16,6 +16,7 @@ import { redactUrl } from '../../security/redaction.js';
 
 const workflowConfig = readJson('config/oa-workflow-412-outbound.json');
 const outboundRuntimeDir = path.join(runtimeDir, 'outbound-requests');
+const activeOutboundRuntimes = new Map();
 
 export class NeedInputError extends Error {
   constructor(message, payload = {}) {
@@ -197,7 +198,11 @@ async function fillFirstVisibleModalInput(modal, value) {
       return index;
     }
   }
-  throw new Error('Project code browser did not expose an editable search input.');
+  throw new NeedInputError('Project code browser did not expose an editable search input.', {
+    kind: 'projectCode',
+    question: '项目编码浏览框没有出现可编辑搜索框。请在 OA 页面手动核对项目编码浏览框，处理后回复“已处理”，或回复新的 WBS 编码。',
+    projectCode: value
+  });
 }
 
 async function clickProjectSearchInModal(page, modal, projectCode) {
@@ -221,7 +226,11 @@ async function clickProjectSearchInModal(page, modal, projectCode) {
     await waitForSettledPage(page);
     return null;
   }
-  throw new Error('Project code browser did not expose a search icon button.');
+  throw new NeedInputError('Project code browser did not expose a search icon button.', {
+    kind: 'projectCode',
+    question: '项目编码浏览框没有出现可点击的搜索按钮。请在 OA 页面手动核对项目编码浏览框，处理后回复“已处理”，或回复新的 WBS 编码。',
+    projectCode
+  });
 }
 
 async function waitForBrowserSpanValue(page, spanSelector, expected, label) {
@@ -233,7 +242,7 @@ async function waitForBrowserSpanValue(page, spanSelector, expected, label) {
     const currentText = await page.locator(spanSelector).first().innerText().catch(() => '');
     throw new NeedInputError(`${label} did not autofill ${expected}.`, {
       kind: 'projectCode',
-      question: `${label}选择后没有回填 ${expected}，请确认该项目编码是否有效。`,
+      question: `${label}选择后没有回填 ${expected}。请确认该项目编码是否有效；可回复新的 WBS 编码重新推导，也可在 OA 页面手动处理后回复“已处理”。`,
       projectCode: expected,
       currentText
     });
@@ -264,7 +273,14 @@ async function selectProjectCode(page, excel) {
   }
   let clicked = await clickModalRow(page, modal, projectCode, 5000);
   if (!clicked) clicked = await clickFirstModalDataRow(page, modal);
-  if (!clicked) throw new Error(`Could not select project code row for ${projectCode}.`);
+  if (!clicked) {
+    throw new NeedInputError(`Could not select project code row for ${projectCode}.`, {
+      kind: 'projectCode',
+      question: `项目编码 ${projectCode} 查询后没有可选择行。请确认 WBS/项目编码是否正确；可回复新的 WBS 编码重新推导，也可在 OA 页面手动处理后回复“已处理”。`,
+      projectCode,
+      wbsCode: excel.wbsCode
+    });
+  }
   await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
   await waitForSettledPage(page);
   await waitForBrowserSpanValue(page, '#field7186span', projectCode, '项目编码');
@@ -291,7 +307,14 @@ async function selectPurpose(page, wbsCode) {
   await openBrowserField(page, workflowConfig.selectors.purposeButton);
   const modal = page.locator('.ant-modal:visible, [role="dialog"]:visible').last();
   const clicked = await clickModalRow(page, modal, purpose.purpose);
-  if (!clicked) throw new Error(`Could not select purpose "${purpose.purpose}".`);
+  if (!clicked) {
+    throw new NeedInputError(`Could not select purpose "${purpose.purpose}".`, {
+      kind: 'purpose',
+      question: `用途 ${purpose.purpose} 没有可选择行。请确认 WBS ${wbsCode} 的用途映射是否正确；可回复新的 WBS 编码重新推导，也可在 OA 页面手动处理后回复“已处理”。`,
+      wbsCode,
+      purpose: purpose.purpose
+    });
+  }
   await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
   await waitForSettledPage(page);
   return purpose;
@@ -325,7 +348,14 @@ async function selectReservation(page, { factoryCode, wbsCode }) {
     clicked = await clickModalRow(page, modal, String(reservationNumber), 1200);
   }
   if (!clicked) clicked = await clickFirstModalDataRow(page, modal);
-  if (!clicked) throw new Error(`Could not select reservation row for factory=${factoryCode}, WBS=${wbsCode}.`);
+  if (!clicked) {
+    throw new NeedInputError(`Could not select reservation row for factory=${factoryCode}, WBS=${wbsCode}.`, {
+      kind: 'reservation',
+      question: `预留号没有可选择行。请确认需求工厂 ${factoryCode} 与 WBS ${wbsCode} 是否正确；可回复新的 WBS 编码重新推导，也可在 OA 页面手动处理后回复“已处理”。`,
+      factoryCode,
+      wbsCode
+    });
+  }
 
   await modal.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
   const sapResponse = await sapResponsePromise;
@@ -475,7 +505,7 @@ async function writeFailureArtifact(page, recorder, error) {
  *                 mrpDescription, costCenter: { costCenterCode, searchName, ... },
  *                 materialRows: [...] },
  *   url?, userInfo?/userJson?/userDepartment?,
- *   warehouseType?, loginTimeoutMs?, save: boolean
+ *   warehouseType?, loginTimeoutMs?, runtimeKey?, save: boolean
  * }
  *
  * Throws NeedInputError (missing slot, with payload) or Error (failure); the
@@ -485,6 +515,8 @@ async function writeFailureArtifact(page, recorder, error) {
 export async function runOutbound(input = {}) {
   let page = null;
   let recorder = null;
+  let runtime = null;
+  const runtimeKey = input.runtimeKey ? String(input.runtimeKey) : '';
   try {
     const userInfo = loadUserInfo(input);
     if (!userInfo.department) {
@@ -503,13 +535,40 @@ export async function runOutbound(input = {}) {
     const save = Boolean(input.save);
 
     const pageConfig = resolveOaPage({ pageId: workflowConfig.pageId, url: input.url });
-    page = await edgeSession.newPage();
-    recorder = attachSafeNetworkRecorder(page);
-    const actions = [];
-    const results = {};
+    if (runtimeKey) {
+      runtime = activeOutboundRuntimes.get(runtimeKey) || null;
+      if (runtime?.page?.isClosed?.()) {
+        activeOutboundRuntimes.delete(runtimeKey);
+        runtime = null;
+      }
+    }
 
-    await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
-    await waitForSettledPage(page);
+    if (!runtime) {
+      page = await edgeSession.newPage();
+      recorder = attachSafeNetworkRecorder(page);
+      runtime = {
+        key: runtimeKey,
+        page,
+        recorder,
+        actions: [],
+        results: {},
+        createdAt: new Date().toISOString(),
+        resumedCount: 0
+      };
+      if (runtimeKey) activeOutboundRuntimes.set(runtimeKey, runtime);
+
+      await page.goto(pageConfig.url, { waitUntil: 'domcontentloaded' });
+      await waitForSettledPage(page);
+    } else {
+      page = runtime.page;
+      recorder = runtime.recorder;
+      runtime.resumedCount = (runtime.resumedCount || 0) + 1;
+      await waitForSettledPage(page).catch(() => {});
+    }
+
+    const actions = runtime.actions;
+    const results = runtime.results;
+
     let login = await detectLoginPage(page);
     if (login.requiresLogin && loginTimeoutMs > 0) {
       const stillRequiresLogin = await waitForLoginRecovery(page, loginTimeoutMs);
@@ -521,13 +580,20 @@ export async function runOutbound(input = {}) {
       throw new Error('OA page requires login. Complete manual login in the managed Edge profile first.');
     }
 
-    async function step(name, fn) {
+    async function step(key, name, fn) {
+      if (Object.prototype.hasOwnProperty.call(results, key)) {
+        return results[key];
+      }
       recorder.setPhase(name);
       const startedCount = recorder.count();
       const startedAt = new Date().toISOString();
       try {
         const value = await fn();
+        results[key] = value;
+        runtime.lastCompletedStep = { key, name, finishedAt: new Date().toISOString() };
+        runtime.failedStep = null;
         actions.push({
+          key,
           name,
           ok: true,
           startedAt,
@@ -536,7 +602,9 @@ export async function runOutbound(input = {}) {
         });
         return value;
       } catch (error) {
+        runtime.failedStep = { key, name, failedAt: new Date().toISOString(), error: error.message };
         actions.push({
+          key,
           name,
           ok: false,
           error: error.message,
@@ -548,37 +616,37 @@ export async function runOutbound(input = {}) {
       }
     }
 
-    results.company = await step(`Select 所属记账主体 ${excel.demandFactoryCode}`, async () => (
+    results.company = await step('company', `Select 所属记账主体 ${excel.demandFactoryCode}`, async () => (
       selectCompany(page, excel.demandFactoryCode)
     ));
-    results.costCenter = await step(`Select 成本中心 ${excel.costCenter.searchName}`, async () => (
+    results.costCenter = await step('costCenter', `Select 成本中心 ${excel.costCenter.searchName}`, async () => (
       selectCostCenter(page, excel.costCenter)
     ));
-    results.warehouseType = await step(`Set 仓库类型 ${warehouseType}`, async () => {
+    results.warehouseType = await step('warehouseType', `Set 仓库类型 ${warehouseType}`, async () => {
       await selectDropdownOption(page, workflowConfig.selectors.warehouseTypeCombobox, warehouseType);
       return warehouseType;
     });
-    results.purpose = await step(`Select 用途 for WBS ${excel.wbsCode}`, async () => (
+    results.purpose = await step('purpose', `Select 用途 for WBS ${excel.wbsCode}`, async () => (
       selectPurpose(page, excel.wbsCode)
     ));
-    results.reservation = await step(`Select 预留号 ${excel.demandFactoryCode}/${excel.wbsCode}`, async () => (
+    results.reservation = await step('reservation', `Select 预留号 ${excel.demandFactoryCode}/${excel.wbsCode}`, async () => (
       selectReservation(page, {
         factoryCode: excel.demandFactoryCode,
         wbsCode: excel.wbsCode
       })
     ));
-    results.checkedMaterialCheckboxCount = await step('Check all material rows', async () => (
+    results.checkedMaterialCheckboxCount = await step('checkedMaterialCheckboxCount', 'Check all material rows', async () => (
       checkAllMaterialRows(page)
     ));
-    results.materialQuantities = await step('Fill material apply quantities from total demand quantities', async () => (
+    results.materialQuantities = await step('materialQuantities', 'Fill material apply quantities from total demand quantities', async () => (
       fillMaterialQuantities(page, results.reservation.sapRows)
     ));
-    results.projectCode = await step(`Select 项目编码 ${resolveProjectCode(excel)}`, async () => (
+    results.projectCode = await step('projectCode', `Select 项目编码 ${resolveProjectCode(excel)}`, async () => (
       selectProjectCode(page, excel)
     ));
 
     if (save) {
-      results.save = await step('Click 保存', async () => clickSave(page));
+      results.save = await step('save', 'Click 保存', async () => clickSave(page));
     }
 
     recorder.setPhase('post-run-scan');
@@ -600,7 +668,9 @@ export async function runOutbound(input = {}) {
       parameters: {
         warehouseType,
         projectCode: results.projectCode.projectCode,
-        save
+        save,
+        runtimeKey: runtimeKey || null,
+        resumedCount: runtime.resumedCount || 0
       },
       results,
       actions,
@@ -612,6 +682,7 @@ export async function runOutbound(input = {}) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const reportPath = path.join(outboundRuntimeDir, `${stamp}-oa-outbound-from-excel.json`);
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
+    if (runtimeKey) activeOutboundRuntimes.delete(runtimeKey);
     return {
       ok: true,
       reportPath,
@@ -632,11 +703,26 @@ export async function runOutbound(input = {}) {
         reservationNumber: results.reservation.reservationNumber,
         materialRowCount: results.materialQuantities.length,
         saved: save,
-        actionCount: actions.length
+        actionCount: actions.length,
+        runtimeKey: runtimeKey || null,
+        resumedCount: runtime.resumedCount || 0
       },
       actions
     };
   } catch (error) {
+    if (runtimeKey && runtime) {
+      runtime.lastErrorAt = new Date().toISOString();
+      runtime.lastError = error.message;
+      if (error instanceof NeedInputError) {
+        error.payload = {
+          ...(error.payload || {}),
+          runtimeKey,
+          failedStep: runtime.failedStep || null,
+          lastCompletedStep: runtime.lastCompletedStep || null,
+          resumableRuntime: true
+        };
+      }
+    }
     error.artifact = await writeFailureArtifact(page, recorder, error).catch(() => null);
     throw error;
   }

@@ -31,9 +31,6 @@ from .execute_plan import _bucket_key
 # Notes emitted by the appliers that mean "a change actually landed". Used to
 # decide whether the correction was applied (continue) or not (re-ask).
 _APPLIED_MARKERS = ("已更新", "已改为", "本次运行补充")
-_RETRY_HINTS = ("重试", "重新", "再试", "再跑", "继续", "retry", "rerun", "已处理", "处理好了", "好了")
-
-
 # --------------------------------------------------------------------------- #
 # LLM contract: the structured patch the understanding layer must produce.
 # --------------------------------------------------------------------------- #
@@ -75,6 +72,8 @@ class CorrectionPatch(BaseModel):
     routeOverrides: List[RouteOverride] = Field(default_factory=list)
     userDepartment: str = ""
     userReportsActionDone: bool = False   # user did an external action (logged in / fixed master data) and wants to continue
+    userConfirmsPendingValue: bool = False # user confirms the pending WBS/project-derived value is correct and wants to continue
+    retryFailedDrafts: bool = False        # user asks to rerun failed draft buckets in a draftReview block
     summary: str = ""
 
 
@@ -88,6 +87,8 @@ _SYSTEM = (
     "materialEdits=[{materialCode:目标码, quantity:'5', unit:'EA'}]。\n"
     "- 单位复核时用户表示采用建议(『按建议修改/采用建议/确认/同意』): "
     "materialEdits=[{materialCode:目标码, useSuggestion:true}]。\n"
+    "  如果 pending 里有多个单位复核候选,且用户是全局确认/按建议修改,必须为每个候选物料各输出一条 "
+    "materialEdit,不要只返回一条空 materialCode 的 edit。\n"
     "- 成本中心(如『成本中心 CC-1010-01』): "
     "wbsEdits=[{wbsCode:目标WBS, costCenter:'CC-1010-01'}]。\n"
     "- MRP控制者(如『MRP控制者 P22』『MRP P22』): "
@@ -99,13 +100,21 @@ _SYSTEM = (
     "- WBS 替换(如『WBS 改成 C2-0339001.01.01』): "
     "wbsEdits=[{wbsCode:旧WBS, newWbsCode:新WBS}]。\n"
     "- WBS 可以用别称或项目名称(自然语言,如『传感器项目』『适配体项目』)指代,不一定是 C2- 开头的编码。"
-    "当 pending 在索要缺失/需要的 WBS(kind 含 wbs / transferInWbs / transferOutWbs)时,"
+    "当 pending 在索要缺失/需要的 WBS 或由 WBS 推导的字段(kind 含 wbs / transferInWbs / transferOutWbs / "
+    "wbsAutofill / projectCode / reservation / purpose)时,"
     "把用户给出的任何 WBS 指代(编码或别称/项目名)放入 wbsEdits[].newWbsCode(target wbsCode 留空);"
     "系统随后会用主数据把别称解析成真实编码。\n"
     "- 只填明确出现的字段;目标物料/WBS 只有一个候选时可以把对应编码留空。\n"
     "- 路由选择(kind=routingChoice,即在其他项目仓发现库存、需在采购与转储间选择): "
     "用户说『确认采购/就采购/走采购』→ routeOverrides=[{materialCode:'', action:'purchase'}](作用于全部待决物料); "
     "用户说『<物料编码> 改走转储/改成转储/走转储』→ routeOverrides=[{materialCode:该物料, action:'transfer'}]。\n"
+    "- 草稿复核(kind=draftReview)时,用户说『重试/重新/再试/再跑/重试出库流程/retry/rerun』"
+    "且没有提供新的业务字段,设 retryFailedDrafts=true。\n"
+    "- 当 pending 问题是在确认当前 WBS/项目编码/用途/预留号是否正确、有效、可继续,"
+    "用户给出肯定回答(如『正确』『是的』『确认』『没问题』『可以继续』)且没有给新值时,"
+    "设 userConfirmsPendingValue=true。不要把这类肯定回答当成无法解析。"
+    "此规则只用于 WBS 或 WBS 推导字段的卡点(kind 通常是 wbsAutofill/projectCode/reservation/purpose/wbs/transferInWbs/transferOutWbs/draftReview),"
+    "不要用于 unitReview/routingChoice 这类需要具体业务选择的卡点。\n"
     "- 若用户表示已在外部系统完成了某项操作(如『已登录/已处理/WBS已改好/好了/弄好了』)"
     "且没有给出新的数据值, 设 userReportsActionDone=true(此时可不带任何 edits)。\n"
     "- 不要编造编码或数量。完全无法解析出任何修正且没有完成操作的表态时 actionable=false,"
@@ -123,13 +132,6 @@ def _pending_items(pending: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(items, list):
         return [dict(item) for item in items if isinstance(item, dict)]
     return [pending] if pending else []
-
-
-def _wants_retry(text: str, pending: Dict[str, Any]) -> bool:
-    if str(pending.get("kind") or "") != "draftReview":
-        return False
-    lowered = text.lower()
-    return any(hint in lowered or hint in text for hint in _RETRY_HINTS)
 
 
 def _seed_completed_buckets(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -668,14 +670,14 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
         return _reask(state, {}, kind, ["当前线程没有待补充问题，这条输入没有作为修正应用"])
     if not business:
         return _reask(state, pending, kind, ["当前线程缺少可修正的结构化需求，请重新发起需求"])
-    if _wants_retry(text, pending):
-        return _retry_failed_drafts(state, pending, text)
-
     try:
         patch = _interpret(pending, business, text)
     except Exception as exc:  # noqa: BLE001 — LLM unavailable/failed: stay parked, keep thread resumable
         return _reask(state, pending, kind,
                       [f"理解服务暂时不可用，请稍后重试或换种更明确的说法（{exc}）"])
+
+    if patch.retryFailedDrafts and kind == "draftReview":
+        return _retry_failed_drafts(state, pending, text)
 
     notes = _apply_patch(business, overrides, pending, patch) if patch.actionable else []
     profile_updated = False
@@ -714,21 +716,27 @@ def apply_corrections_node(state: Dict[str, Any]) -> Dict[str, Any]:
     resume_mode = str(pending.get("resumeMode") or "")
     action_done = (bool(patch.userReportsActionDone) and not applied
                    and resume_mode in {RESUME_ACTION, RESUME_MIXED})
+    value_confirmed = (bool(patch.userConfirmsPendingValue) and not applied
+                       and resume_mode in {RESUME_ACTION, RESUME_MIXED})
     if action_done:
         notes = notes + ["用户确认已完成外部操作，重新校验并继续"]
+    if value_confirmed:
+        notes = notes + ["用户确认当前待确认值正确，重新校验并继续"]
 
-    did_something = bool(applied) or action_done or route_changed
+    did_something = bool(applied) or action_done or value_confirmed or route_changed
     history = append_history(state, {
         "node": "apply_corrections",
         "ok": did_something,
         "kind": kind,
         "actionDone": action_done,
+        "valueConfirmed": value_confirmed,
         "summary": patch.summary,
         "notes": notes,
     })
     correction_history = list(state.get("correction_history") or [])
     correction_history.append({"kind": kind, "answer": text, "summary": patch.summary,
-                               "notes": notes, "applied": bool(applied), "actionDone": action_done})
+                               "notes": notes, "applied": bool(applied),
+                               "actionDone": action_done, "valueConfirmed": value_confirmed})
 
     if not did_something:
         fallback = notes or ["没有从这句话里识别到可应用的修正"]

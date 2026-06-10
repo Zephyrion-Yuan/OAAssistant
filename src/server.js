@@ -218,6 +218,7 @@ const outboundSchema = z.object({
   userDepartment: z.string().optional(),
   warehouseType: z.string().nullish(),
   loginTimeoutMs: z.number().optional(),
+  runtimeKey: z.string().optional(),
   save: z.boolean().optional()
 }).passthrough();
 
@@ -297,6 +298,7 @@ const purchaseSchema = z.object({
   projectType: z.string().optional(),
   loginTimeoutMs: z.number().optional(),
   wbsAutofillTimeoutMs: z.number().optional(),
+  runtimeKey: z.string().optional(),
   save: z.boolean().optional()
 }).passthrough();
 

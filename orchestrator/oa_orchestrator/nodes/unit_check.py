@@ -79,11 +79,16 @@ def unit_check_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "pdmFields": base.get("fields") or {},
         }
         judgment = _llm_judge(settings, item)
-        if judgment.consistent:
-            continue  # LLM says the units are interchangeable -> no review needed
         item["suggestedUnit"] = judgment.suggestedUnit
         item["suggestedQuantity"] = judgment.suggestedQuantity
-        item["reason"] = judgment.reason
+        if judgment.consistent:
+            item["reason"] = (
+                judgment.reason
+                or "需求单位与 PDM 基本计量单位不同，请人工确认是否等价。"
+            )
+            item["llmConsistent"] = True
+        else:
+            item["reason"] = judgment.reason
         reviews.append(item)
 
     if not reviews:
